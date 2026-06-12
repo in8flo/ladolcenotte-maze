@@ -1,0 +1,36 @@
+# Builds the Foundry module package and publishes it as a GitHub Release whenever
+# a version tag (e.g. v1.1.0) is pushed. The release assets are exactly what
+# Foundry / The Forge fetch:
+#   - module.json  (the manifest, pointed at by module.json's "manifest" URL)
+#   - module.zip   (the module files, with module.json at the zip root)
+#
+# Because module.json uses the ".../releases/latest/download/..." URLs, no edits
+# are needed per release — just bump the version and push a matching tag.
+name: Release module
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package module.zip (module.json at zip root)
+        run: |
+          cd foundry
+          zip -r ../module.zip . -x "*.DS_Store" "*/.DS_Store"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            foundry/module.json
+            module.zip
