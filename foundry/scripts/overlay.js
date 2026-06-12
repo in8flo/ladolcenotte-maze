@@ -105,8 +105,10 @@ export class LedOverlay {
   // Draw an LED-state map: { "row,col": [r,g,b] }.
   draw(ledState) {
     this.lastState = ledState;
-    if (!this.container || !canvas?.ready || !canvas.grid) return;
+    if (!this.container || this.container.destroyed) return;
+    if (!canvas?.ready || !canvas.grid) return;
     if (!this.visible) return;
+    if (!this.graphics || this.graphics.destroyed) return;
 
     const g = this.graphics;
     g.clear();

@@ -444,9 +444,10 @@ function handlePanelAction(action, html) {
 Hooks.on("getSceneControlButtons", (controls) => {
   if (!game.user.isGM) return;
 
+  const isTokenCtl = (c) => c?.name === "token" || c?.name === "tokens";
   const tokenCtl = Array.isArray(controls)
-    ? controls.find(c => c.name === "token" || c.name === "tokens")
-    : (controls.tokens ?? controls.token);
+    ? controls.find(isTokenCtl)
+    : (controls.tokens ?? controls.token ?? Object.values(controls).find(isTokenCtl));
   if (!tokenCtl || !tokenCtl.tools) return;
 
   const hordeTool = {

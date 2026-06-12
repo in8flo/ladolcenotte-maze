@@ -63,6 +63,32 @@ Edit `bridge/bridge.py` → `SERIAL_PORTS` to match (COM3/COM4... on Windows,
 3. The Act 2 scene grid must align 1:1 with the maze (25×25, one grid cell per
    tile). Token (x, y) maps to (row, col) via the grid size.
 
+> Hosting on **The Forge** instead of local Foundry? Install via a manifest URL —
+> see **`PACKAGING.md`** to publish the repo and **`TESTING-FORGE.md`** for the
+> full test walkthrough.
+
+---
+
+## Testing without LEDs (on-screen overlay)
+
+The module's output is decoupled from the hardware. An **LED output mode** world
+setting controls where the computed LED state goes:
+
+| Mode | What it does |
+|------|--------------|
+| **Overlay only** (default) | Draws the LED state as translucent squares on the Foundry canvas. No bridge, no LEDs, no errors when the bridge is absent. Use this to test the whole encounter on The Forge. |
+| **Overlay + LED bridge** | On-screen overlay *and* physical LEDs. |
+| **LED bridge only** | Physical LEDs only (original behavior). |
+
+The overlay shows **exactly** what the LEDs would show — the same cell→color map
+feeds both. Toggle it with the **▦ button** in the token tools, the **Shift+O**
+hotkey, or the 🎭 panel.
+
+**Alignment:** if the overlay doesn't sit on the maze art, set **Maze grid
+offset — X/Y (cells)** in the module settings, and enable **Debug: log token
+cells** to print each token's computed `(row, col)` to the console. Full steps in
+`TESTING-FORGE.md`.
+
 ---
 
 ## Running a session
