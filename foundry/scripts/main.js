@@ -331,6 +331,9 @@ Hooks.on("canvasReady", () => { if (atmosphere) atmosphere.attach(); });
 Hooks.on("updateToken", (tokenDoc, changes) => {
   if (atmosphere && ("x" in changes || "y" in changes)) atmosphere.recompute();
 });
+// When the GM resets the scene's fog, Foundry deletes the FogExploration docs —
+// clear the atmosphere's revealed hedges too so they go back to black.
+Hooks.on("deleteFogExploration", () => { if (atmosphere) atmosphere.resetReveal(); });
 
 // ============ TOKEN TRACKING ============
 // The highlight follows the token via refreshToken, which fires as the token
@@ -1063,8 +1066,9 @@ function buildPanelHTML(d) {
       <div class="ldn-buttons">
         <button data-action="atmosphere-toggle" class="ldn-btn ${d.atmosphereOn ? 'sel' : ''}">${d.atmosphereOn ? '🌫 Atmosphere ON' : '⬛ Atmosphere OFF'}</button>
         <button data-action="atmosphere-preview" class="ldn-btn ${d.atmospherePreview ? 'sel' : ''}">${d.atmospherePreview ? '👁 Previewing' : '👁 Preview here'}</button>
+        <button data-action="atmosphere-reset" class="ldn-btn">↺ Reset reveal</button>
       </div>
-      <div class="ldn-hint">Players see hedges fade in as they explore, plus pulsing tent/portal hints through the fog. Toggle Preview to see it on your screen.</div>
+      <div class="ldn-hint">Hedges reveal real map art as players explore; tents/portals are landmarks. Foundry's <strong>Reset Fog</strong> also clears the hedges back to black (then they re-reveal). ↺ resets your own preview now.</div>
 
       <hr>
       <div class="ldn-led">
@@ -1116,6 +1120,7 @@ function handlePanelAction(action) {
       game.settings.set(MODULE_ID, "atmospherePreviewGM", !getSetting("atmospherePreviewGM", false))
         .then(() => refreshPanel());
       return;
+    case "atmosphere-reset": if (atmosphere) atmosphere.resetReveal(); return;
     case "led-test-panels": led.test("panels"); return;
     case "led-test-rainbow": led.test("rainbow"); return;
     case "led-clear": led.clear(); return;

@@ -138,6 +138,18 @@ export class Atmosphere {
     catch { return false; }
   }
 
+  // Wipe the progressively-revealed hedges (e.g. when the GM resets fog), so the
+  // maze goes back to black and re-reveals as tokens move. Tents + entry are
+  // intentional always-on landmarks and stay.
+  resetReveal() {
+    this.seenCorridors.clear();
+    this.revealedHedges.clear();
+    this._seeded = false;
+    this.seedEntry();
+    this.buildArtMask();
+    this.recompute();
+  }
+
   // The entry is visible from the start (player tokens spawn there).
   seedEntry() {
     if (this._seeded) return;
