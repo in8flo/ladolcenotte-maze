@@ -401,38 +401,59 @@ function promptSwarmTactics(name) {
   }).render(true);
 }
 
-// ============ PORTALS (d8 random teleport) ============
-// Eligible portals = every portal cell EXCEPT the topmost one (above Sal's tent).
+// Bounding box of a set of [row, col] cells.
+function bbox(cells) {
+  if (!cells.length) return null;
+  let minR = Infinity, maxR = -Infinity, minC = Infinity, maxC = -Infinity;
+  for (const [r, c] of cells) {
+    minR = Math.min(minR, r); maxR = Math.max(maxR, r);
+    minC = Math.min(minC, c); maxC = Math.max(maxC, c);
+  }
+  return { minR, maxR, minC, maxC };
+}
+
+// ============ PORTALS (d8 teleport) ============
+// The 8 destination portals = every portal cell EXCEPT:
+//   • the two portals flanking Sal's tent in its column (the one above the tent
+//     and the one just below it), and
+//   • the four portals inside the prison zone.
+// On this maze that leaves exactly 8, so a d8 maps 1:1 to a destination.
 function eligiblePortalCells() {
   const portals = findCells(CELL.PORTAL); // row-major order
   if (!portals.length) return [];
-  // Exclude the topmost portal (smallest row) — the escape portal after Sal's tent.
-  let topRow = portals[0][0];
-  for (const [r] of portals) topRow = Math.min(topRow, r);
-  return portals.filter(([r]) => r !== topRow);
+  const prison = bbox(findCells(CELL.PRISON));
+  const sal = bbox(findCells(CELL.SAL));
+  const inBox = (r, c, b) => b && r >= b.minR && r <= b.maxR && c >= b.minC && c <= b.maxC;
+  // "Near Sal's tent" = the tent's columns, within 2 rows above or below it.
+  const nearSal = (r, c) => sal && c >= sal.minC && c <= sal.maxC && r >= sal.minR - 2 && r <= sal.maxR + 2;
+  return portals.filter(([r, c]) => !inBox(r, c, prison) && !nearSal(r, c));
 }
 
 async function portalTeleport(token) {
   if (!token) return;
   const [curR, curC] = tokenToCell(token);
-  const choices = eligiblePortalCells().filter(([r, c]) => !(r === curR && c === curC));
-  if (!choices.length) {
+  const portals = eligiblePortalCells(); // row-major; exactly 8 on this maze
+  if (!portals.length) {
     ui.notifications.warn("No eligible portals found on this maze.");
     return;
   }
   const roll = new Roll("1d8");
   await roll.evaluate({ async: true });
-  // The d8 is the players' roll for drama; the destination is chosen at random
-  // among the eligible portals (matching "corresponds to one of the portals,
-  // chosen randomly").
-  const pick = choices[Math.floor(Math.random() * choices.length)];
-  await teleportTokenToCell(token, pick[0], pick[1]);
+  // The d8 maps 1:1 onto the eligible portals (modulo guards any odd count).
+  let idx = (roll.total - 1) % portals.length;
+  let dest = portals[idx];
+  // Never strand them on the portal they're already standing on.
+  if (dest[0] === curR && dest[1] === curC) {
+    idx = (idx + 1) % portals.length;
+    dest = portals[idx];
+  }
+  await teleportTokenToCell(token, dest[0], dest[1]);
 
   await roll.toMessage({
-    flavor: `<strong>${token.name}</strong> is seized by a portal and dragged through the weave of the maze… (d8)`,
+    flavor: `<strong>${token.name}</strong> is seized by a portal — the d8 decides where the maze spits them out…`,
   });
   ChatMessage.create({
-    content: `🌀 <strong>${token.name}</strong> tumbles out of a portal elsewhere in the hedges.`,
+    content: `🌀 <strong>${token.name}</strong> tumbles out of <strong>portal #${idx + 1}</strong>, elsewhere in the hedges.`,
   });
 }
 
@@ -465,6 +486,8 @@ function prisonCellsOrdered() {
   return { center, ordered: box };
 }
 
+// ⛓ Teleport into the cell only — the escape check is posted separately, by the
+// DM, when the character actually attempts to break out (postEscapeCard).
 async function sendToPrison(token) {
   if (!token) return;
   const { ordered } = prisonCellsOrdered();
@@ -480,10 +503,17 @@ async function sendToPrison(token) {
   await teleportTokenToCell(token, dest[0], dest[1]);
 
   ChatMessage.create({
+    content: `<p style="font-style:italic">⛓ <strong>${token.name}</strong> is dragged through the hedges and thrown into the iron holding cell at the maze's heart.</p>`,
+  });
+  ui.notifications.info(`${token.name} sent to the prison. Click 🗝 when they attempt their escape.`);
+}
+
+// 🗝 Post the escape check on demand (manual trigger).
+function postEscapeCard(name) {
+  ChatMessage.create({
     content: `
       <div class="ldn-chat-card">
-        <h3>⛓ ${token.name} is dragged to the holding cell</h3>
-        <p>Captured and thrown into the iron pen at the maze's heart.</p>
+        <h3>🗝 ${name} attempts to escape the cell</h3>
         <p><strong>Escape — DC 15</strong> (choose one):</p>
         <ul>
           <li><strong>Athletics</strong> (force the bars), or</li>
@@ -497,7 +527,6 @@ async function sendToPrison(token) {
         </ul>
       </div>`,
   });
-  ui.notifications.info(`${token.name} sent to the prison.`);
 }
 
 // ============ MAZE WALLS ============
@@ -606,7 +635,7 @@ class HordePanel extends Application {
       title: "🎭 La Dolce Notte — Horde Control",
       classes: ["ldn-dialog"],
       template: null,
-      width: 440,
+      width: 460,
       height: "auto",
       resizable: true,
       popOut: true,
@@ -681,7 +710,8 @@ function buildPanelHTML(d) {
       <button class="ldn-mini" data-player-action="charm-dec" data-name="${p.name}" title="−1 alt">−</button>
       <button class="ldn-mini" data-player-action="charm-inc" data-name="${p.name}" title="+1 alt">＋</button>
       <button class="ldn-mini" data-player-action="portal" data-name="${p.name}" title="Portal teleport (d8)">🌀</button>
-      <button class="ldn-mini" data-player-action="prison" data-name="${p.name}" title="Send to prison">⛓</button>
+      <button class="ldn-mini" data-player-action="prison" data-name="${p.name}" title="Send to prison (teleport only)">⛓</button>
+      <button class="ldn-mini" data-player-action="escape" data-name="${p.name}" title="Post escape check (DC 15)">🗝</button>
     </div>`).join("") : `<div class="ldn-empty">No player-character tokens on the scene.</div>`;
 
   return `
@@ -801,6 +831,7 @@ function handlePlayerAction(action, name) {
     case "prison":
       if (!token) return ui.notifications.warn(`No token named "${name}" on the scene.`);
       sendToPrison(token); return;
+    case "escape": postEscapeCard(name); return;
   }
 }
 

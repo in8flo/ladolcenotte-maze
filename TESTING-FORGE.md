@@ -184,10 +184,13 @@ separate logic. Both fields are editable in the panel.
   tokens now get a distinct saturated color automatically (no more gray).
 - **Alt N / − / ＋** — the per-player "alternate" tally (see Swarm below). Adjust
   manually if needed.
-- **🌀** — Portal teleport: rolls a d8 (shown to players) and instantly drops that
-  token onto a random portal tile (excludes the top portal above Sal's tent).
+- **🌀** — Portal teleport: rolls a d8 (shown to players) that maps **1:1 to one
+  of 8 portals** and instantly drops the token there. The 8 exclude the two
+  portals flanking Sal's tent and the four portals in the prison zone.
 - **⛓** — Send to prison: teleports the token to the center of the red holding
-  cell (or the nearest free tile in the 3×3), and posts the escape card.
+  cell (or the nearest free tile in the 3×3). **Teleport only** — no escape card.
+- **🗝** — Post escape check: posts the DC 15 escape card **when you choose**
+  (after they've been imprisoned and actually attempt to break out).
 
 **Swarm Tactics (changed).** On a failed DC Wis save, offer the player a blind
 choice:
@@ -196,10 +199,13 @@ choice:
   adds +1 to that character's **Alt** tally, which is how much the final Nymph's
   charm DC will rise against them. The real cost is whispered to you only.
 
-**Prison escape card** (auto-posted on ⛓): DC 15 Athletics **or** Acrobatics/Sleight
-of Hand. On success: 1 level of exhaustion, Dorium weapon loses 2 charges, then a
-short rest with Hit Dice. (These are *noted* for you to apply — nothing is changed
-on the actor sheet automatically.)
+**Prison escape card** (posted manually via 🗝): DC 15 Athletics **or**
+Acrobatics/Sleight of Hand. On success: 1 level of exhaustion, Dorium weapon loses
+2 charges, then a short rest with Hit Dice. (These are *noted* for you to apply —
+nothing is changed on the actor sheet automatically.)
+
+**The horde green now pulses** — the occupied rows breathe brighter/darker on a
+~2.5s cycle so the wall looms ominously instead of sitting flat.
 
 **🧱 Build Maze Walls** (Scene setup section): generates Foundry walls along every
 hedge boundary so tokens can't walk through the maze. It uses the **same grid

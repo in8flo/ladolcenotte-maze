@@ -35,6 +35,7 @@ export class LedController {
 
     // Render state
     this.portalPhase = 0;        // for pulsing portal animation
+    this.hordePhase = 0;         // for the horde's ominous "breathing" pulse
     this.playerPositions = {};   // name -> [row, col]
     this.playerColors = {};      // name -> [r,g,b] (DM-configurable; overrides defaults)
     this.enabled = true;
@@ -154,10 +155,13 @@ export class LedController {
       }
     }
 
-    // Layer 2: horde — a solid green wall overwriting every occupied row.
+    // Layer 2: horde — a solid green wall overwriting every occupied row,
+    // slowly pulsing brighter/darker so it looms with an ominous presence.
     if (this.horde?.active) {
+      const pulse = 0.7 + 0.3 * Math.sin(this.hordePhase); // 0.4 .. 1.0
+      const hordeColor = dim(COLORS.HORDE, BRIGHTNESS.HORDE * pulse);
       for (const [r, c] of this.horde.occupiedCells()) {
-        leds[`${r},${c}`] = dim(COLORS.HORDE, BRIGHTNESS.HORDE);
+        leds[`${r},${c}`] = hordeColor;
       }
     }
 
@@ -225,10 +229,12 @@ export class LedController {
     return leds;
   }
 
-  // Animate portals (called on a timer ~10fps from main.js).
+  // Animate portals + the horde pulse (called on a timer ~10fps from main.js).
   tick() {
     this.portalPhase += 0.15;
     if (this.portalPhase > Math.PI * 2) this.portalPhase -= Math.PI * 2;
+    this.hordePhase += 0.25; // ~2.5s breathing cycle
+    if (this.hordePhase > Math.PI * 2) this.hordePhase -= Math.PI * 2;
     this.render();
   }
 }
