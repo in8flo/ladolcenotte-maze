@@ -3,10 +3,9 @@
 The Forge installs modules from a **public manifest URL**, not by copying files.
 This repo is set up so that publishing is: *bump version → push a tag → done*.
 
-> **Replace `OWNER`** in `foundry/module.json` (the `url`, `manifest`, and
-> `download` fields) with the GitHub account/org that will host this repo. The
-> repo **must be public** — The Forge fetches the manifest and zip anonymously,
-> and private-repo release assets are not anonymously downloadable.
+> `foundry/module.json` is already set to host under **`in8flo`**. The repo
+> **must be public** — The Forge fetches the manifest and zip anonymously, and
+> private-repo release assets are not anonymously downloadable.
 
 The URLs use the `releases/latest/download/...` pattern, so they never change
 between releases.
@@ -18,8 +17,8 @@ between releases.
 `foundry/module.json` declares:
 
 ```json
-"manifest": "https://github.com/OWNER/ladolcenotte-maze/releases/latest/download/module.json",
-"download": "https://github.com/OWNER/ladolcenotte-maze/releases/latest/download/module.zip"
+"manifest": "https://github.com/in8flo/ladolcenotte-maze/releases/latest/download/module.json",
+"download": "https://github.com/in8flo/ladolcenotte-maze/releases/latest/download/module.zip"
 ```
 
 The included GitHub Actions workflow (`.github/workflows/release.yml`) runs on
@@ -39,41 +38,35 @@ The Forge reads the manifest, downloads the zip, and extracts it to
 
 1. Create a new **public** repo on GitHub named **`ladolcenotte-maze`** (empty,
    no README/license — this repo already has files).
-2. Edit `foundry/module.json` and replace the three `OWNER` placeholders with
-   your GitHub username.
-3. From `C:\Users\Mike\Downloads\ledmaze`:
+2. From `C:\Users\Mike\Downloads\ledmaze` (already committed locally):
 
    ```powershell
-   git add -A
-   git commit -m "La Dolce Notte maze module — overlay phase"
-   git branch -M main
-   git remote add origin https://github.com/OWNER/ladolcenotte-maze.git
+   git remote add origin https://github.com/in8flo/ladolcenotte-maze.git
    git push -u origin main
    ```
 
-4. Tag and push the release:
+3. Tag and push the release:
 
    ```powershell
    git tag v1.1.0
    git push origin v1.1.0
    ```
 
-5. Watch **Actions** in the GitHub repo — the "Release module" workflow builds
+4. Watch **Actions** in the GitHub repo — the "Release module" workflow builds
    `module.zip` and creates the **v1.1.0** Release with both assets.
-6. Confirm the manifest resolves (paste in a browser):
-   `https://github.com/OWNER/ladolcenotte-maze/releases/latest/download/module.json`
+5. Confirm the manifest resolves (paste in a browser):
+   `https://github.com/in8flo/ladolcenotte-maze/releases/latest/download/module.json`
 
 ### Option B — manual zip (no Actions)
 
-1. Replace `OWNER` in `foundry/module.json`.
-2. Zip the **contents of `foundry/`** so `module.json` is at the zip root:
+1. Zip the **contents of `foundry/`** so `module.json` is at the zip root:
 
    ```powershell
    Compress-Archive -Path "C:\Users\Mike\Downloads\ledmaze\foundry\*" `
      -DestinationPath "C:\Users\Mike\Downloads\ledmaze\module.zip" -Force
    ```
 
-3. Create a GitHub Release tagged `v1.1.0` and upload **both** `foundry/module.json`
+2. Create a GitHub Release tagged `v1.1.0` and upload **both** `foundry/module.json`
    and `module.zip` as assets.
 
 ### Option C — Forge Bazaar upload

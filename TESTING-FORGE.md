@@ -11,13 +11,13 @@ translucent squares on the Act 2 scene.
 
 ## 0. One-time: install the module on The Forge
 
-> Replace `OWNER` below with the real GitHub account once the repo is published
-> (see `PACKAGING.md`). The final URL will be confirmed and pasted here.
+> This URL works once the repo is published and the first `v*` tag has built a
+> release (see `PACKAGING.md`).
 
 **Manifest URL:**
 
 ```
-https://github.com/OWNER/ladolcenotte-maze/releases/latest/download/module.json
+https://github.com/in8flo/ladolcenotte-maze/releases/latest/download/module.json
 ```
 
 1. Log into The Forge → **My Foundry** → launch your Foundry instance.
