@@ -29,18 +29,17 @@ function getSetting(key, fallback) {
 }
 
 // ============ GRID MAPPING ============
-// Convert a token to its maze (row, col). Uses the token's *document* position
-// (the authoritative target) rather than the animated placeable position, so the
-// highlight snaps to the destination cell immediately instead of lagging behind.
-function tokenToCell(token) {
+// Convert a token's top-left pixel position (+ its grid dimensions) to a maze
+// (row, col). Taking explicit coordinates lets callers pass the authoritative
+// destination from an update payload, instead of a possibly-stale document read.
+function cellFromTopLeft(x, y, doc) {
   const offX = getSetting("gridOffsetX", 0);
   const offY = getSetting("gridOffsetY", 0);
-  const doc = token.document ?? token;
   const gs = canvas.grid.size;
-  const w = (doc.width ?? 1) * gs;
-  const h = (doc.height ?? 1) * gs;
-  const cx = doc.x + w / 2;
-  const cy = doc.y + h / 2;
+  const w = ((doc?.width) ?? 1) * gs;
+  const h = ((doc?.height) ?? 1) * gs;
+  const cx = x + w / 2;
+  const cy = y + h / 2;
 
   let gi, gj;
   if (canvas?.grid && typeof canvas.grid.getOffset === "function") {
@@ -51,6 +50,12 @@ function tokenToCell(token) {
     gj = Math.floor(cx / gs);
   }
   return [gi - offY, gj - offX];
+}
+
+// A token's current maze cell, from its authoritative document position.
+function tokenToCell(token) {
+  const doc = token.document ?? token;
+  return cellFromTopLeft(doc.x, doc.y, doc);
 }
 
 // Maze cell (row, col) -> top-left pixel on the canvas (inverse of tokenToCell).
@@ -135,8 +140,9 @@ function findTokenByName(name) {
 async function teleportTokenToCell(token, row, col) {
   if (!token) return;
   const { x, y } = cellTopLeftPixel(row, col);
-  // animate:false → instant; ldnSkipTriggers → don't fire sprite sprints on arrival.
-  await token.document.update({ x, y }, { animate: false, ldnSkipTriggers: true });
+  // teleport:true → instant move that ignores wall collision (GM-style teleport
+  // through the maze); ldnSkipTriggers → don't fire sprite sprints on arrival.
+  await token.document.update({ x, y }, { teleport: true, animate: false, ldnSkipTriggers: true });
   // Record where they landed so arriving on a portal doesn't immediately re-prompt.
   portalState[token.id] = (MAZE[row]?.[col] === CELL.PORTAL) ? `${row},${col}` : null;
   refreshPlayers({ skipTriggers: true });
@@ -210,6 +216,13 @@ Hooks.once("init", () => {
     scope: "world", config: true, type: Boolean, default: false,
   });
 
+  game.settings.register(MODULE_ID, "disableMovementHistory", {
+    name: "Hide token movement history",
+    hint: "Overrides Foundry v13 so the movement path/distance no longer appears when you hover a token (cleaner combat). Existing trails are cleared when toggled.",
+    scope: "world", config: true, type: Boolean, default: true,
+    onChange: () => { clearAllMovementHistory(); },
+  });
+
   game.keybindings.register(MODULE_ID, "toggleOverlay", {
     name: "Toggle LED overlay",
     hint: "Show/hide the on-screen LED overlay.",
@@ -218,6 +231,36 @@ Hooks.once("init", () => {
     onDown: () => { toggleOverlay(); return true; },
   });
 });
+
+// ============ MOVEMENT-HISTORY OVERRIDE ============
+// Foundry v13 records each token's movement and shows the path/distance on hover.
+// Patch TokenDocument#_shouldRecordMovementHistory so nothing is recorded while
+// the setting is on — leaving the hover with nothing to draw.
+Hooks.once("setup", () => {
+  const TD = foundry?.documents?.TokenDocument
+    ?? (typeof TokenDocument !== "undefined" ? TokenDocument : null);
+  const proto = TD?.prototype;
+  if (proto && typeof proto._shouldRecordMovementHistory === "function" && !proto._ldnHistoryPatched) {
+    const orig = proto._shouldRecordMovementHistory;
+    proto._shouldRecordMovementHistory = function (...args) {
+      try {
+        if (game.settings.get(MODULE_ID, "disableMovementHistory")) return false;
+      } catch (_) { /* setting not ready */ }
+      return orig.apply(this, args);
+    };
+    proto._ldnHistoryPatched = true;
+    console.log(`${MODULE_ID} | token movement-history override installed`);
+  }
+});
+
+// Clear any recorded movement trails (used on load and when the setting toggles).
+async function clearAllMovementHistory() {
+  if (!game.user?.isGM || !canvas?.tokens) return;
+  if (!getSetting("disableMovementHistory", true)) return;
+  for (const t of canvas.tokens.placeables) {
+    try { await t.document.clearMovementHistory?.(); } catch (_) { /* ignore */ }
+  }
+}
 
 Hooks.once("ready", () => {
   if (!game.user.isGM) return;
@@ -244,10 +287,11 @@ Hooks.once("ready", () => {
   game.ladolcenotte = {
     horde, led, overlay, openPanel, refreshPlayers, toggleOverlay,
     buildMazeWalls, portalTeleport, sendToPrison, randomizePortalNumbers,
-    sendSelectedToPrison,
+    sendSelectedToPrison, clearAllMovementHistory,
   };
 
   refreshPlayers();
+  clearAllMovementHistory();
 
   console.log(`${MODULE_ID} | ready (output: ${led.outputMode})`);
   ui.notifications?.info("La Dolce Notte maze module loaded. Use the 🎭 scene control to open the horde panel.");
@@ -258,6 +302,7 @@ Hooks.on("canvasReady", () => {
   overlay.attach();
   syncPortalLabels();
   refreshPlayers();
+  clearAllMovementHistory();
 });
 
 // ============ TOKEN TRACKING ============
@@ -282,7 +327,13 @@ Hooks.on("updateToken", (tokenDoc, changes, options) => {
   if (!("x" in changes || "y" in changes)) return;
   const skip = options?.ldnSkipTriggers === true;
   refreshPlayers({ skipTriggers: skip });
-  if (!skip) checkPortalEntry(tokenDoc);
+  if (!skip) {
+    // Use the change payload's final position so portal entry fires the instant
+    // they move INTO the portal, not on a later move.
+    const x = ("x" in changes) ? changes.x : tokenDoc.x;
+    const y = ("y" in changes) ? changes.y : tokenDoc.y;
+    checkPortalEntry(tokenDoc, x, y);
+  }
 });
 
 Hooks.on("createToken", () => { if (game.user.isGM) refreshPlayers(); });
@@ -530,33 +581,43 @@ async function portalTeleport(token) {
     ui.notifications.warn("No eligible portals found on this maze.");
     return;
   }
-  const roll = new Roll("1d8");
-  await roll.evaluate({ async: true });
-  const n = roll.total;
+  // If they're standing on a numbered portal, auto-reroll so the d8 never sends
+  // them to the portal they're already on.
+  const [curR, curC] = tokenToCell(token);
+  const currentNum = getPortalNumberMap()[`${curR},${curC}`];
+
+  let n, tries = 0;
+  do {
+    const r = new Roll("1d8");
+    await r.evaluate({ async: true });
+    await r.toMessage({ flavor: `<strong>${token.name}</strong> — portal d8` });
+    n = r.total;
+    tries++;
+  } while (currentNum && n === currentNum && tries < 20);
+
   const dest = portalCellForNumber(n);
   if (!dest) { ui.notifications.warn(`No portal numbered ${n}.`); return; }
 
   await teleportTokenToCell(token, dest[0], dest[1]);
-  await roll.toMessage({
-    flavor: `<strong>${token.name}</strong> is seized by a portal — the d8 chooses the exit…`,
-  });
   ChatMessage.create({
-    content: `🌀 <strong>${token.name}</strong> rolled a <strong>${n}</strong> and is flung to <strong>portal #${n}</strong>.`,
+    content: `🌀 <strong>${token.name}</strong> is flung to <strong>portal #${n}</strong>.`,
   });
 }
 
 // ---- Portal entry detection: fires once when a token steps onto a portal ----
 const portalState = {}; // tokenId -> portal cell key currently occupied, or null
 
-function checkPortalEntry(tokenDoc) {
-  const token = canvas.tokens.get(tokenDoc.id);
-  if (!token || token.actor?.type !== "character") return;
-  const [row, col] = tokenToCell(token);
+function checkPortalEntry(tokenDoc, x, y) {
+  if (tokenDoc.actor?.type !== "character") return;
+  const [row, col] = cellFromTopLeft(x, y, tokenDoc);
   const onPortal = MAZE[row]?.[col] === CELL.PORTAL && eligiblePortalCells().some(([r, c]) => r === row && c === col);
   const key = onPortal ? `${row},${col}` : null;
   const prev = portalState[tokenDoc.id] ?? null;
   portalState[tokenDoc.id] = key;
-  if (onPortal && key !== prev) promptPortal(token, getPortalNumberMap()[key]);
+  if (onPortal && key !== prev) {
+    const token = canvas.tokens.get(tokenDoc.id);
+    if (token) promptPortal(token, getPortalNumberMap()[key]);
+  }
 }
 
 function promptPortal(token, number) {
@@ -796,6 +857,7 @@ class HordePanel extends Application {
       bridgeConnected: led?.connected,
       offX: getSetting("gridOffsetX", 0),
       offY: getSetting("gridOffsetY", 0),
+      historyOff: getSetting("disableMovementHistory", true),
     };
   }
 
@@ -935,6 +997,10 @@ function buildPanelHTML(d) {
         <button data-action="build-walls" class="ldn-btn">🧱 Build Maze Walls</button>
       </div>
       <div class="ldn-hint">Uses grid offset (${d.offX}, ${d.offY}). Set both to 7 for the Act 2 scene first.</div>
+      <div class="ldn-buttons" style="margin-top:8px">
+        <button data-action="toggle-history" class="ldn-btn ${d.historyOff ? 'sel' : ''}">${d.historyOff ? '🚫 Move-trails OFF' : '👣 Move-trails ON'}</button>
+        <button data-action="clear-history" class="ldn-btn">🧹 Clear trails now</button>
+      </div>
 
       <hr>
       <div class="ldn-led">
@@ -973,6 +1039,11 @@ function handlePanelAction(action) {
     case "escape-selected": escapeCardForSelected(); return;
     case "portal-randomize": randomizePortalNumbers(); return;
     case "build-walls": buildMazeWalls(); return;
+    case "toggle-history":
+      game.settings.set(MODULE_ID, "disableMovementHistory", !getSetting("disableMovementHistory", true))
+        .then(() => refreshPanel());
+      return;
+    case "clear-history": clearAllMovementHistory(); return;
     case "led-test-panels": led.test("panels"); return;
     case "led-test-rainbow": led.test("rainbow"); return;
     case "led-clear": led.clear(); return;

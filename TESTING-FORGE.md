@@ -196,9 +196,16 @@ map in the overlay.
 - **🎲 Randomize numbers** — shuffles them into a fresh 1–8 arrangement.
 - The per-portal **set #** inputs let you assign a number by hand; changing one
   **swaps** with whatever portal held that number, so it stays a clean 1–8 set.
-- **Stepping onto a portal** prompts you to roll a d8; the token is flung to the
-  portal carrying that number. (The 8 exclude both portals flanking Sal's tent and
-  the four in the prison zone.)
+- **Stepping onto a portal** (the moment they move *onto* it) prompts you to roll a
+  d8; the token is flung — **through the walls** — to the portal carrying that
+  number. If the d8 matches the portal they're standing on, it **auto-rerolls**.
+  (The 8 exclude both portals flanking Sal's tent and the four in the prison zone.)
+
+**Movement trails off** (Scene setup section, on by default): Foundry v13's
+movement path/distance no longer shows when you hover a token. Toggle with
+**👣 Move-trails ON / 🚫 OFF**, or **🧹 Clear trails now** to wipe existing ones.
+Also a world setting ("Hide token movement history"). Prison/portal teleports
+ignore walls; normal token movement is still blocked by the hedges (it's a maze).
 
 **Swarm Tactics (changed).** On a failed DC Wis save, offer the player a blind
 choice:
