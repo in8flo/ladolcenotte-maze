@@ -8,6 +8,7 @@
 import { HordeEngine } from "./horde.js";
 import { LedController, OUTPUT_MODE, defaultColorForName } from "./led-controller.js";
 import { LedOverlay } from "./overlay.js";
+import { Atmosphere } from "./atmosphere.js";
 import { GRID_SIZE, MAZE, CELL, findCells } from "./maze-data.js";
 
 const MODULE_ID = "ladolcenotte-maze";
@@ -17,6 +18,8 @@ let led = null;
 let overlay = null;
 let tickInterval = null;
 let panel = null; // HordePanel singleton
+let atmosphere = null;     // player-facing fog/atmosphere layer
+let atmosphereTick = null;
 
 // ============ SETTINGS HELPERS ============
 function getSetting(key, fallback) {
@@ -223,6 +226,20 @@ Hooks.once("init", () => {
     onChange: () => { clearAllMovementHistory(); },
   });
 
+  // --- Player-facing atmosphere layer (fog hints) ---
+  game.settings.register(MODULE_ID, "atmosphereEnabled", {
+    name: "Player fog atmosphere",
+    hint: "Show players maze structure + point-of-interest hints (hedges, tents, portals) above the fog, so they sense the map's design and where to explore.",
+    scope: "world", config: true, type: Boolean, default: true,
+    onChange: () => { setupAtmosphere(); },
+  });
+  game.settings.register(MODULE_ID, "atmospherePreviewGM", {
+    name: "Preview player atmosphere (GM)",
+    hint: "Show the player atmosphere layer on YOUR screen too, to preview what players see.",
+    scope: "client", config: true, type: Boolean, default: false,
+    onChange: () => { setupAtmosphere(); },
+  });
+
   game.keybindings.register(MODULE_ID, "toggleOverlay", {
     name: "Toggle LED overlay",
     hint: "Show/hide the on-screen LED overlay.",
@@ -263,6 +280,9 @@ async function clearAllMovementHistory() {
 }
 
 Hooks.once("ready", () => {
+  // The atmosphere layer is player-facing — set it up for everyone (the rest of
+  // this hook is GM-only).
+  setupAtmosphere();
   if (!game.user.isGM) return;
 
   horde = new HordeEngine();
@@ -288,6 +308,7 @@ Hooks.once("ready", () => {
     horde, led, overlay, openPanel, refreshPlayers, toggleOverlay,
     buildMazeWalls, portalTeleport, sendToPrison, randomizePortalNumbers,
     sendSelectedToPrison, clearAllMovementHistory,
+    get atmosphere() { return atmosphere; }, setupAtmosphere,
   };
 
   refreshPlayers();
@@ -303,6 +324,12 @@ Hooks.on("canvasReady", () => {
   syncPortalLabels();
   refreshPlayers();
   clearAllMovementHistory();
+});
+
+// Atmosphere layer (all users): re-attach on scene change, refresh reveal on moves.
+Hooks.on("canvasReady", () => { if (atmosphere) atmosphere.attach(); });
+Hooks.on("updateToken", (tokenDoc, changes) => {
+  if (atmosphere && ("x" in changes || "y" in changes)) atmosphere.recompute();
 });
 
 // ============ TOKEN TRACKING ============
@@ -815,6 +842,33 @@ function rebuildOverlay() {
   if (led) led.render();
 }
 
+// ============ ATMOSPHERE (player-facing fog hints) ============
+// Players always get it (when enabled); the GM only sees it when previewing.
+function atmosphereActive() {
+  if (!getSetting("atmosphereEnabled", true)) return false;
+  return game.user.isGM ? getSetting("atmospherePreviewGM", false) : true;
+}
+
+function setupAtmosphere() {
+  if (!atmosphereActive()) { teardownAtmosphere(); return; }
+  if (!atmosphere) {
+    atmosphere = new Atmosphere();
+    atmosphere.setPortalCells(eligiblePortalCells());
+  } else {
+    atmosphere.setPortalCells(eligiblePortalCells());
+  }
+  atmosphere.setVisible(true);
+  atmosphere.attach();
+  if (!atmosphereTick) atmosphereTick = setInterval(() => { if (atmosphere) atmosphere.tick(); }, 100);
+  refreshPanel();
+}
+
+function teardownAtmosphere() {
+  if (atmosphere) { atmosphere.detach(); atmosphere = null; }
+  if (atmosphereTick) { clearInterval(atmosphereTick); atmosphereTick = null; }
+  refreshPanel();
+}
+
 // ============ DM CONTROL PANEL (persistent Application) ============
 // A real Application (not a re-created Dialog) so it keeps its position when the
 // user drags it aside and re-renders in place on every state change. Also works
@@ -858,6 +912,8 @@ class HordePanel extends Application {
       offX: getSetting("gridOffsetX", 0),
       offY: getSetting("gridOffsetY", 0),
       historyOff: getSetting("disableMovementHistory", true),
+      atmosphereOn: getSetting("atmosphereEnabled", true),
+      atmospherePreview: getSetting("atmospherePreviewGM", false),
     };
   }
 
@@ -1003,6 +1059,14 @@ function buildPanelHTML(d) {
       </div>
 
       <hr>
+      <div class="ldn-section-title">Player view (atmosphere)</div>
+      <div class="ldn-buttons">
+        <button data-action="atmosphere-toggle" class="ldn-btn ${d.atmosphereOn ? 'sel' : ''}">${d.atmosphereOn ? '🌫 Atmosphere ON' : '⬛ Atmosphere OFF'}</button>
+        <button data-action="atmosphere-preview" class="ldn-btn ${d.atmospherePreview ? 'sel' : ''}">${d.atmospherePreview ? '👁 Previewing' : '👁 Preview here'}</button>
+      </div>
+      <div class="ldn-hint">Players see hedges fade in as they explore, plus pulsing tent/portal hints through the fog. Toggle Preview to see it on your screen.</div>
+
+      <hr>
       <div class="ldn-led">
         <label>Test:</label>
         <button data-action="led-test-panels" class="ldn-btn">Test Panels</button>
@@ -1044,6 +1108,14 @@ function handlePanelAction(action) {
         .then(() => refreshPanel());
       return;
     case "clear-history": clearAllMovementHistory(); return;
+    case "atmosphere-toggle":
+      game.settings.set(MODULE_ID, "atmosphereEnabled", !getSetting("atmosphereEnabled", true))
+        .then(() => refreshPanel());
+      return;
+    case "atmosphere-preview":
+      game.settings.set(MODULE_ID, "atmospherePreviewGM", !getSetting("atmospherePreviewGM", false))
+        .then(() => refreshPanel());
+      return;
     case "led-test-panels": led.test("panels"); return;
     case "led-test-rainbow": led.test("rainbow"); return;
     case "led-clear": led.clear(); return;

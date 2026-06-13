@@ -236,6 +236,50 @@ select all → delete) and run it again.
 
 ---
 
+## Fog & atmosphere (player view, v1.5.0)
+
+A player-facing **Atmosphere** layer draws *on top of* Foundry's fog (it doesn't
+replace Foundry's vision). It's **on by default**; the GM controls it from the
+🎭 panel's **Player view (atmosphere)** section:
+- **🌫 Atmosphere ON / OFF** — world toggle (affects players).
+- **👁 Preview here** — also draws it on *your* GM screen so you can see what
+  players see (off by default, since you already see the whole map).
+
+What players get:
+- **Hedges fade in near where they've explored** — the maze structure draws itself
+  as a muted-green silhouette as they move, without revealing far-off paths.
+- **The entry is structure-revealed from the start** (their tokens spawn there).
+- **Pulsing hints through the fog** — the **five tents** (colored diamonds) and the
+  **8 portals** (magenta squares) pulse above the fog so players sense there are
+  multiple places to go. **A hint disappears once a token gains line of sight to
+  it** — Foundry then reveals the real thing underneath.
+
+> Performance: the layer rescans visibility on each move and ~twice a second. With
+> a handful of tokens it's negligible; if you ever feel a hitch, toggle Atmosphere
+> off. Per-player exploration accumulates during the session (a full F5 reload
+> restarts it, then it re-fills as tokens look around).
+
+### Make the fog *look* like fog
+
+Foundry's unexplored areas are pure black by default. The module ships a misty
+**Fog Overlay texture** to soften the explored "memory" areas into drifting mist:
+
+1. Open **Scene Configuration** for the Act 2 scene.
+2. Find the **Fog Overlay** image field (under the Ambience / Lighting area) and set
+   it to:
+   ```
+   modules/ladolcenotte-maze/assets/fog-overlay.png
+   ```
+3. (Optional) Nudge the scene's **Darkness Level** down slightly so unexplored
+   areas read as deep fog rather than total black.
+
+*(Straight talk: truly replacing Foundry's black unexplored areas with volumetric
+fog is engine-deep; the texture + the atmosphere hints above get the misty,
+hint-rich feel without that rabbit hole. If you want me to push the look further,
+say so.)*
+
+---
+
 ## Definition of done (this phase)
 
 - [x] Module installs on The Forge via the manifest URL
