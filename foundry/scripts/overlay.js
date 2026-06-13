@@ -18,6 +18,8 @@ export class LedOverlay {
     this.visible = true;
     this.opacity = 0.5;        // base alpha (maze art shows through)
     this.lastState = null;     // last drawn LED-state map, for redraws
+    this.labelLayer = null;    // PIXI.Container for portal-number labels
+    this.portalLabels = [];    // [{ row, col, text }]
   }
 
   // Configurable maze position on the scene grid (in CELLS), so the maze can
@@ -45,6 +47,11 @@ export class LedOverlay {
     this.graphics = new PIXI.Graphics();
     this.container.addChild(this.graphics);
 
+    // Portal-number labels live above the colored squares.
+    this.labelLayer = new PIXI.Container();
+    this.labelLayer.eventMode = "none";
+    this.container.addChild(this.labelLayer);
+
     // Attach to the interface group (above tokens, scene-coordinate space, so
     // it pans/zooms with the map). Fall back to the stage root if needed.
     const parent = canvas.interface ?? canvas.stage;
@@ -52,6 +59,7 @@ export class LedOverlay {
     parent.addChild(this.container);
 
     if (this.lastState) this.draw(this.lastState);
+    this.drawLabels();
   }
 
   detach() {
@@ -61,6 +69,38 @@ export class LedOverlay {
     }
     this.container = null;
     this.graphics = null;
+    this.labelLayer = null;
+  }
+
+  // Set the portal-number labels to draw on the map: [{ row, col, text }].
+  setPortalLabels(labels) {
+    this.portalLabels = Array.isArray(labels) ? labels : [];
+    this.drawLabels();
+  }
+
+  // (Re)build the portal-number text objects at their cell centers.
+  drawLabels() {
+    if (!this.labelLayer || this.labelLayer.destroyed) return;
+    if (!canvas?.ready || !canvas.grid) return;
+    for (const child of this.labelLayer.removeChildren()) {
+      try { child.destroy(); } catch (_) { /* ignore */ }
+    }
+    const gs = canvas.grid.size;
+    for (const lbl of this.portalLabels) {
+      const { x, y, w, h } = this.cellRect(lbl.row, lbl.col);
+      const text = new PIXI.Text(String(lbl.text), {
+        fontFamily: "Signika, sans-serif",
+        fontSize: Math.max(12, Math.round(gs * 0.42)),
+        fontWeight: "bold",
+        fill: 0xffffff,
+        stroke: 0x1a0010,
+        strokeThickness: Math.max(2, Math.round(gs * 0.06)),
+        align: "center",
+      });
+      text.anchor.set(0.5);
+      text.position.set(x + w / 2, y + h / 2);
+      this.labelLayer.addChild(text);
+    }
   }
 
   setVisible(v) {

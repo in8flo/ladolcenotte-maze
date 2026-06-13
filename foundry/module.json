@@ -2,7 +2,7 @@
   "id": "ladolcenotte-maze",
   "title": "La Dolce Notte — Maze & Horde",
   "description": "Act 2 maze mechanics for La Dolce Notte: A Midnight Toast — the Bliss Horde, portals, sprites, prison, Swarm Tactics, plus an on-screen LED overlay (and optional physical LED sync).",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "compatibility": {
     "minimum": "12",
     "verified": "13"

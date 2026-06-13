@@ -182,15 +182,23 @@ separate logic. Both fields are editable in the panel.
 **Players section** (lists each character token on the scene):
 - **Color swatch** — click to set that token's overlay marker color. Unconfigured
   tokens now get a distinct saturated color automatically (no more gray).
-- **Alt N / − / ＋** — the per-player "alternate" tally (see Swarm below). Adjust
-  manually if needed.
-- **🌀** — Portal teleport: rolls a d8 (shown to players) that maps **1:1 to one
-  of 8 portals** and instantly drops the token there. The 8 exclude the two
-  portals flanking Sal's tent and the four portals in the prison zone.
-- **⛓** — Send to prison: teleports the token to the center of the red holding
-  cell (or the nearest free tile in the 3×3). **Teleport only** — no escape card.
-- **🗝** — Post escape check: posts the DC 15 escape card **when you choose**
-  (after they've been imprisoned and actually attempt to break out).
+- **Alt N / − / ＋** — the per-player "alternate" tally (see Swarm below).
+- **🌀** — force a portal roll for that player (same d8 logic as stepping on one).
+
+**Prison section** (works on the **selected** token — click a token on the canvas
+first, even one you just dropped in):
+- **⛓ Send selected → Prison** — teleports it to the center of the red cell (or
+  the nearest free tile in the 3×3). Teleport only.
+- **🗝 Escape card** — posts the DC 15 escape check when you choose.
+
+**Portals section** — the 8 portals each carry a **number 1–8**, shown right on the
+map in the overlay.
+- **🎲 Randomize numbers** — shuffles them into a fresh 1–8 arrangement.
+- The per-portal **set #** inputs let you assign a number by hand; changing one
+  **swaps** with whatever portal held that number, so it stays a clean 1–8 set.
+- **Stepping onto a portal** prompts you to roll a d8; the token is flung to the
+  portal carrying that number. (The 8 exclude both portals flanking Sal's tent and
+  the four in the prison zone.)
 
 **Swarm Tactics (changed).** On a failed DC Wis save, offer the player a blind
 choice:
@@ -206,6 +214,11 @@ nothing is changed on the actor sheet automatically.)
 
 **The horde green now pulses** — the occupied rows breathe brighter/darker on a
 ~2.5s cycle so the wall looms ominously instead of sitting flat.
+
+**Token highlight tracking** — the lit cell now follows the token via the render
+hook, so it snaps to the token's **final cell** after any move (single- or
+multi-square). If it ever looks stale, do a hard reload (Ctrl+Shift+R) to clear a
+cached older copy of the module.
 
 **🧱 Build Maze Walls** (Scene setup section): generates Foundry walls along every
 hedge boundary so tokens can't walk through the maze. It uses the **same grid

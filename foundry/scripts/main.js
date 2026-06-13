@@ -137,6 +137,8 @@ async function teleportTokenToCell(token, row, col) {
   const { x, y } = cellTopLeftPixel(row, col);
   // animate:false → instant; ldnSkipTriggers → don't fire sprite sprints on arrival.
   await token.document.update({ x, y }, { animate: false, ldnSkipTriggers: true });
+  // Record where they landed so arriving on a portal doesn't immediately re-prompt.
+  portalState[token.id] = (MAZE[row]?.[col] === CELL.PORTAL) ? `${row},${col}` : null;
   refreshPlayers({ skipTriggers: true });
 }
 
@@ -148,6 +150,10 @@ Hooks.once("init", () => {
     scope: "world", config: false, type: Object, default: {},
   });
   game.settings.register(MODULE_ID, "playerConfig", {
+    scope: "world", config: false, type: Object, default: {},
+  });
+  // Portal numbering: { "row,col": 1..8 } — which numbered portal each tile is.
+  game.settings.register(MODULE_ID, "portalNumbers", {
     scope: "world", config: false, type: Object, default: {},
   });
 
@@ -231,12 +237,14 @@ Hooks.once("ready", () => {
   led.connect();
 
   overlay.attach();
+  syncPortalLabels();
 
   tickInterval = setInterval(() => led.tick(), 100);
 
   game.ladolcenotte = {
     horde, led, overlay, openPanel, refreshPlayers, toggleOverlay,
-    buildMazeWalls, portalTeleport, sendToPrison,
+    buildMazeWalls, portalTeleport, sendToPrison, randomizePortalNumbers,
+    sendSelectedToPrison,
   };
 
   refreshPlayers();
@@ -248,14 +256,33 @@ Hooks.once("ready", () => {
 Hooks.on("canvasReady", () => {
   if (!game.user.isGM || !overlay) return;
   overlay.attach();
+  syncPortalLabels();
   refreshPlayers();
 });
 
 // ============ TOKEN TRACKING ============
+// The highlight follows the token via refreshToken, which fires as the token
+// animates AND when it settles — so the lit cell always lands under the token's
+// final position (the previous updateToken-only path lagged on v13 movement).
+Hooks.on("refreshToken", (token) => {
+  if (!game.user.isGM || !led) return;
+  if (token.actor?.type !== "character") return;
+  const [row, col] = tokenToCell(token);
+  const prev = led.playerPositions[token.name];
+  if (!prev || prev[0] !== row || prev[1] !== col) {
+    led.setPlayer(token.name, row, col);
+    led.render();
+  }
+});
+
+// Game-logic triggers (sprite sprints + portal entry) fire on the authoritative
+// move event, using the token's final position.
 Hooks.on("updateToken", (tokenDoc, changes, options) => {
   if (!game.user.isGM || !led) return;
   if (!("x" in changes || "y" in changes)) return;
-  refreshPlayers({ skipTriggers: options?.ldnSkipTriggers === true });
+  const skip = options?.ldnSkipTriggers === true;
+  refreshPlayers({ skipTriggers: skip });
+  if (!skip) checkPortalEntry(tokenDoc);
 });
 
 Hooks.on("createToken", () => { if (game.user.isGM) refreshPlayers(); });
@@ -429,32 +456,122 @@ function eligiblePortalCells() {
   return portals.filter(([r, c]) => !inBox(r, c, prison) && !nearSal(r, c));
 }
 
+// ---- Portal numbering: each of the 8 portals carries a number 1..8 ----
+// Resolves a number for every eligible portal, filling any unset tile with a
+// row-major default so a d8 always lands somewhere.
+function getPortalNumberMap() {
+  const portals = eligiblePortalCells(); // row-major
+  const saved = getSetting("portalNumbers", {});
+  const map = {};
+  portals.forEach((p, i) => {
+    const key = `${p[0]},${p[1]}`;
+    const n = parseInt(saved[key], 10);
+    map[key] = (Number.isInteger(n) && n >= 1 && n <= portals.length) ? n : (i + 1);
+  });
+  return map;
+}
+
+// Number -> [row, col] of the portal carrying that number.
+function portalCellForNumber(n) {
+  const map = getPortalNumberMap();
+  for (const [key, num] of Object.entries(map)) {
+    if (num === n) return key.split(",").map(Number);
+  }
+  const portals = eligiblePortalCells();
+  return portals[(n - 1) % portals.length] ?? null;
+}
+
+// Labels for the on-map overlay: [{ row, col, text }].
+function portalLabels() {
+  return Object.entries(getPortalNumberMap()).map(([key, n]) => {
+    const [row, col] = key.split(",").map(Number);
+    return { row, col, text: n };
+  });
+}
+
+function syncPortalLabels() {
+  if (overlay) overlay.setPortalLabels(portalLabels());
+}
+
+async function setPortalNumber(cellKey, n) {
+  const map = getPortalNumberMap();
+  const current = map[cellKey];
+  if (current === n) return;
+  // Swap with whichever portal currently holds n, so 1..8 stays a clean set.
+  for (const [k, v] of Object.entries(map)) {
+    if (v === n && k !== cellKey) { map[k] = current; break; }
+  }
+  map[cellKey] = n;
+  await game.settings.set(MODULE_ID, "portalNumbers", map);
+  syncPortalLabels();
+  refreshPanel();
+}
+
+async function randomizePortalNumbers() {
+  const portals = eligiblePortalCells();
+  const nums = portals.map((_, i) => i + 1);
+  for (let i = nums.length - 1; i > 0; i--) {       // Fisher–Yates shuffle
+    const j = Math.floor(Math.random() * (i + 1));
+    [nums[i], nums[j]] = [nums[j], nums[i]];
+  }
+  const map = {};
+  portals.forEach((p, i) => { map[`${p[0]},${p[1]}`] = nums[i]; });
+  await game.settings.set(MODULE_ID, "portalNumbers", map);
+  syncPortalLabels();
+  refreshPanel();
+  ui.notifications.info("Portal numbers randomized.");
+}
+
+// ---- Portal teleport: roll d8 → teleport to the portal with that number ----
 async function portalTeleport(token) {
   if (!token) return;
-  const [curR, curC] = tokenToCell(token);
-  const portals = eligiblePortalCells(); // row-major; exactly 8 on this maze
+  const portals = eligiblePortalCells();
   if (!portals.length) {
     ui.notifications.warn("No eligible portals found on this maze.");
     return;
   }
   const roll = new Roll("1d8");
   await roll.evaluate({ async: true });
-  // The d8 maps 1:1 onto the eligible portals (modulo guards any odd count).
-  let idx = (roll.total - 1) % portals.length;
-  let dest = portals[idx];
-  // Never strand them on the portal they're already standing on.
-  if (dest[0] === curR && dest[1] === curC) {
-    idx = (idx + 1) % portals.length;
-    dest = portals[idx];
-  }
-  await teleportTokenToCell(token, dest[0], dest[1]);
+  const n = roll.total;
+  const dest = portalCellForNumber(n);
+  if (!dest) { ui.notifications.warn(`No portal numbered ${n}.`); return; }
 
+  await teleportTokenToCell(token, dest[0], dest[1]);
   await roll.toMessage({
-    flavor: `<strong>${token.name}</strong> is seized by a portal — the d8 decides where the maze spits them out…`,
+    flavor: `<strong>${token.name}</strong> is seized by a portal — the d8 chooses the exit…`,
   });
   ChatMessage.create({
-    content: `🌀 <strong>${token.name}</strong> tumbles out of <strong>portal #${idx + 1}</strong>, elsewhere in the hedges.`,
+    content: `🌀 <strong>${token.name}</strong> rolled a <strong>${n}</strong> and is flung to <strong>portal #${n}</strong>.`,
   });
+}
+
+// ---- Portal entry detection: fires once when a token steps onto a portal ----
+const portalState = {}; // tokenId -> portal cell key currently occupied, or null
+
+function checkPortalEntry(tokenDoc) {
+  const token = canvas.tokens.get(tokenDoc.id);
+  if (!token || token.actor?.type !== "character") return;
+  const [row, col] = tokenToCell(token);
+  const onPortal = MAZE[row]?.[col] === CELL.PORTAL && eligiblePortalCells().some(([r, c]) => r === row && c === col);
+  const key = onPortal ? `${row},${col}` : null;
+  const prev = portalState[tokenDoc.id] ?? null;
+  portalState[tokenDoc.id] = key;
+  if (onPortal && key !== prev) promptPortal(token, getPortalNumberMap()[key]);
+}
+
+function promptPortal(token, number) {
+  new Dialog({
+    title: "Portal!",
+    content: `<div style="padding:8px">
+      <p><strong>${token.name}</strong> has stepped onto <strong>portal #${number ?? "?"}</strong>.</p>
+      <p>Roll a d8 — they are flung to the portal with that number.</p>
+    </div>`,
+    buttons: {
+      go: { icon: '<i class="fas fa-dice-d6"></i>', label: "Roll d8 & Teleport", callback: () => portalTeleport(token) },
+      no: { label: "Not now" },
+    },
+    default: "go",
+  }).render(true);
 }
 
 // ============ PRISON (teleport + escape) ============
@@ -527,6 +644,19 @@ function postEscapeCard(name) {
         </ul>
       </div>`,
   });
+}
+
+// Operate on whatever token(s) the DM has selected on the canvas — works for any
+// token (incl. one freshly dropped on the scene), not just the player list.
+function sendSelectedToPrison() {
+  const toks = canvas.tokens?.controlled ?? [];
+  if (!toks.length) { ui.notifications.warn("Select a token on the canvas first, then click."); return; }
+  for (const t of toks) sendToPrison(t);
+}
+function escapeCardForSelected() {
+  const toks = canvas.tokens?.controlled ?? [];
+  if (!toks.length) { ui.notifications.warn("Select a token on the canvas first, then click."); return; }
+  for (const t of toks) postEscapeCard(t.name);
 }
 
 // ============ MAZE WALLS ============
@@ -658,6 +788,7 @@ class HordePanel extends Application {
       pendingSprints: horde.pendingSprints,
       c,
       players,
+      portals: portalLabels().sort((a, b) => a.text - b.text), // by number for the UI
       overlayOn: overlay?.visible,
       overlayOpacity: getSetting("overlayOpacity", 0.5),
       outputMode: getSetting("outputMode", OUTPUT_MODE.OVERLAY_ONLY),
@@ -691,6 +822,11 @@ class HordePanel extends Application {
     html.on("change", "[data-player-color]", (ev) => {
       setPlayerColor(ev.currentTarget.dataset.playerColor, ev.currentTarget.value);
     });
+    html.on("change", "[data-portal-num]", (ev) => {
+      const key = ev.currentTarget.dataset.portalNum;
+      const n = parseInt(ev.currentTarget.value, 10);
+      if (Number.isInteger(n) && n >= 1 && n <= 8) setPortalNumber(key, n);
+    });
     html.on("input", "[data-cfg-overlay]", (ev) => {
       const val = parseFloat(ev.currentTarget.value);
       if (!isNaN(val)) {
@@ -709,10 +845,14 @@ function buildPanelHTML(d) {
       <span class="ldn-charm" title="Alternate / secret-charm tally">Alt ${p.charm}</span>
       <button class="ldn-mini" data-player-action="charm-dec" data-name="${p.name}" title="−1 alt">−</button>
       <button class="ldn-mini" data-player-action="charm-inc" data-name="${p.name}" title="+1 alt">＋</button>
-      <button class="ldn-mini" data-player-action="portal" data-name="${p.name}" title="Portal teleport (d8)">🌀</button>
-      <button class="ldn-mini" data-player-action="prison" data-name="${p.name}" title="Send to prison (teleport only)">⛓</button>
-      <button class="ldn-mini" data-player-action="escape" data-name="${p.name}" title="Post escape check (DC 15)">🗝</button>
+      <button class="ldn-mini" data-player-action="portal" data-name="${p.name}" title="Force a portal roll (d8)">🌀</button>
     </div>`).join("") : `<div class="ldn-empty">No player-character tokens on the scene.</div>`;
+
+  const portalRows = d.portals.length ? d.portals.map(p => `
+    <div class="ldn-portal-row">
+      <span class="ldn-portal-loc">#${p.text} → (row ${p.row}, col ${p.col})</span>
+      <label>set #<input type="number" min="1" max="8" data-portal-num="${p.row},${p.col}" value="${p.text}"></label>
+    </div>`).join("") : `<div class="ldn-empty">No portals on this maze.</div>`;
 
   return `
     <div class="ldn-panel">
@@ -760,6 +900,22 @@ function buildPanelHTML(d) {
       <hr>
       <div class="ldn-section-title">Players</div>
       <div class="ldn-players">${playerRows}</div>
+
+      <hr>
+      <div class="ldn-section-title">Prison</div>
+      <div class="ldn-buttons">
+        <button data-action="prison-selected" class="ldn-btn">⛓ Send selected → Prison</button>
+        <button data-action="escape-selected" class="ldn-btn">🗝 Escape card</button>
+      </div>
+      <div class="ldn-hint">Select a token on the canvas first, then click. Works for any token (even one just dropped in).</div>
+
+      <hr>
+      <div class="ldn-section-title">Portals (d8 destinations)</div>
+      <div class="ldn-buttons">
+        <button data-action="portal-randomize" class="ldn-btn">🎲 Randomize numbers</button>
+      </div>
+      <div class="ldn-portals">${portalRows}</div>
+      <div class="ldn-hint">Numbers show on the map. Stepping onto a portal prompts a d8 → flings the token to the portal with that number.</div>
 
       <hr>
       <div class="ldn-overlay-controls">
@@ -813,6 +969,9 @@ function handlePanelAction(action) {
     case "sprint": horde.addSprint(1); persistHorde(); led.render(); refreshPanel(); return;
     case "refresh": refreshPlayers(); refreshPanel(); return;
     case "overlay-toggle": toggleOverlay(); return;
+    case "prison-selected": sendSelectedToPrison(); return;
+    case "escape-selected": escapeCardForSelected(); return;
+    case "portal-randomize": randomizePortalNumbers(); return;
     case "build-walls": buildMazeWalls(); return;
     case "led-test-panels": led.test("panels"); return;
     case "led-test-rainbow": led.test("rainbow"); return;
@@ -828,10 +987,6 @@ function handlePlayerAction(action, name) {
     case "portal":
       if (!token) return ui.notifications.warn(`No token named "${name}" on the scene.`);
       portalTeleport(token); return;
-    case "prison":
-      if (!token) return ui.notifications.warn(`No token named "${name}" on the scene.`);
-      sendToPrison(token); return;
-    case "escape": postEscapeCard(name); return;
   }
 }
 
