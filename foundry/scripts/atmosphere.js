@@ -1,18 +1,18 @@
 // La Dolce Notte — Atmosphere Layer (player-facing)
-// Draws maze structure + point-of-interest hints ABOVE Foundry's fog/vision, so
-// players sense the map's design and where to explore — without the map being
-// fully revealed. This COMPLEMENTS Foundry's vision; it does not replace it.
+// Reveals slices of the MAP'S OWN ART above Foundry's fog, so players sense the
+// maze's design and where to explore — without fully lifting the fog. It does
+// this by drawing a copy of the scene background texture, MASKED to just the
+// cells we want to show:
+//   • hedge cells next to corridors the player has explored (progressive), and
+//   • the 3x3 tent areas (revealed from the start as landmarks).
+// Portals stay as pulsing colored squares (a deliberate "something's here" hint).
 //
-//  • Hedges fade in near explored corridors (progressive structure).
-//  • The entry is structure-revealed from the start (tokens spawn there).
-//  • Tents + portals pulse as hints above the fog, and a hint disappears once a
-//    token actually gains line of sight to it (Foundry then reveals the real art).
+// This COMPLEMENTS Foundry's vision; it does not replace it.
 
 import { GRID_SIZE, MAZE, CELL, COLORS, findCells } from "./maze-data.js";
 
 const MODULE_ID = "ladolcenotte-maze";
 const NEIGHBORS8 = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]];
-const HEDGE_RGB = [46, 74, 48]; // muted hedge green for the silhouette
 
 function gset(key, fallback) {
   try { const v = game.settings.get(MODULE_ID, key); return v ?? fallback; } catch { return fallback; }
@@ -21,51 +21,33 @@ function gset(key, fallback) {
 export class Atmosphere {
   constructor() {
     this.container = null;
-    this.hedgeG = null;       // graphics: revealed hedge silhouettes
-    this.poiG = null;         // graphics: pulsing POI hints
+    this.artSprite = null;    // a copy of the scene background, masked to revealed cells
+    this.artMask = null;      // PIXI.Graphics defining which cells show the art
+    this.poiG = null;         // pulsing portal hints
     this.visible = true;
     this.phase = 0;
     this.tickCount = 0;
-    this.revealedHedges = new Set(); // "r,c" wall cells shown as structure
+    this.revealedHedges = new Set(); // "r,c" hedge cells whose art is shown
     this.seenCorridors = new Set();  // "r,c" walkable cells already processed
     this.portalCells = [];           // [[r,c], …] eligible portals (set by main)
     this.poiVisible = {};            // "r,c" -> currently in line of sight?
-    this._pois = null;               // cached static POI list (tents + portals)
+    this._tentCells = null;          // cached [[r,c], …] of all tent cells
     this._seeded = false;
   }
 
   get offsetX() { return gset("gridOffsetX", 0); }
   get offsetY() { return gset("gridOffsetY", 0); }
 
-  setPortalCells(cells) {
-    this.portalCells = Array.isArray(cells) ? cells : [];
-    this._pois = null; // invalidate cache
-  }
+  setPortalCells(cells) { this.portalCells = Array.isArray(cells) ? cells : []; }
 
-  // Static (always-shown) hint POIs: the five tents + the eligible portals.
-  pois() {
-    if (this._pois) return this._pois;
-    const list = [];
-    const tents = [
-      [CELL.SAL, COLORS.SAL], [CELL.ELEANOR, COLORS.ELEANOR], [CELL.EVERLY, COLORS.EVERLY],
-      [CELL.LAVINIA, COLORS.LAVINIA], [CELL.RUPERT, COLORS.RUPERT],
-    ];
-    for (const [type, color] of tents) {
-      const center = this.centerOf(findCells(type));
-      if (center) list.push({ row: center[0], col: center[1], color, kind: "tent" });
-    }
-    for (const [r, c] of this.portalCells) {
-      list.push({ row: r, col: c, color: COLORS.PORTAL, kind: "portal" });
-    }
-    this._pois = list;
-    return list;
-  }
-
-  centerOf(cells) {
-    if (!cells.length) return null;
-    let sr = 0, sc = 0;
-    for (const [r, c] of cells) { sr += r; sc += c; }
-    return [Math.round(sr / cells.length), Math.round(sc / cells.length)];
+  // Every cell occupied by any of the five tents (their 3x3 areas).
+  tentCells() {
+    if (this._tentCells) return this._tentCells;
+    const types = [CELL.SAL, CELL.ELEANOR, CELL.EVERLY, CELL.LAVINIA, CELL.RUPERT];
+    const cells = [];
+    for (const t of types) cells.push(...findCells(t));
+    this._tentCells = cells;
+    return cells;
   }
 
   attach() {
@@ -77,16 +59,21 @@ export class Atmosphere {
     this.container.interactiveChildren = false;
     this.container.zIndex = 90;            // above fog, below the GM LED overlay (100)
     this.container.visible = this.visible;
-    this.hedgeG = new PIXI.Graphics();
+
     this.poiG = new PIXI.Graphics();
-    this.container.addChild(this.hedgeG, this.poiG);
+    this.container.addChild(this.poiG);
+
+    // A copy of the scene's background art, clipped (masked) to the revealed
+    // cells. Inserted below the portal pulses.
+    this.buildArtSprite();
 
     const parent = canvas.interface ?? canvas.stage;
     parent.sortableChildren = true;
     parent.addChild(this.container);
 
     this.seedEntry();
-    this.recompute(); // draws hedges + pois (keeps accumulated reveal across re-attach)
+    this.buildArtMask(); // draw the already-known hedges + tents right away
+    this.recompute();    // then refresh reveal from current vision + draw pois
   }
 
   detach() {
@@ -94,12 +81,46 @@ export class Atmosphere {
       this.container.parent?.removeChild(this.container);
       try { this.container.destroy({ children: true }); } catch (_) { /* ignore */ }
     }
-    this.container = null; this.hedgeG = null; this.poiG = null;
+    this.container = null; this.artSprite = null; this.artMask = null; this.poiG = null;
   }
 
   setVisible(v) {
     this.visible = !!v;
     if (this.container) this.container.visible = this.visible;
+  }
+
+  // Acquire the scene background texture (sync if already loaded, else load the
+  // scene's background source and finish when ready), then build the art sprite.
+  buildArtSprite() {
+    const tex = canvas.primary?.background?.texture;
+    if (tex && tex.valid !== false && (tex.width || tex.baseTexture)) {
+      this._makeArtSprite(tex);
+      return;
+    }
+    const src = canvas.scene?.background?.src;
+    const loader = foundry?.canvas?.loadTexture ?? (typeof loadTexture === "function" ? loadTexture : null);
+    if (src && loader) {
+      Promise.resolve(loader(src)).then((t) => {
+        if (t && this.container && !this.container.destroyed && !this.artSprite) {
+          this._makeArtSprite(t);
+          this.buildArtMask();
+        }
+      }).catch(() => { /* no art available */ });
+    }
+  }
+
+  _makeArtSprite(tex) {
+    if (!this.container || this.container.destroyed) return;
+    const r = canvas.dimensions.sceneRect;
+    this.artSprite = new PIXI.Sprite(tex);
+    this.artSprite.position.set(r.x, r.y);
+    this.artSprite.width = r.width;
+    this.artSprite.height = r.height;
+    this.artMask = new PIXI.Graphics();
+    this.artSprite.mask = this.artMask;
+    // Keep the art (and its mask) below the portal pulses.
+    this.container.addChildAt(this.artMask, 0);
+    this.container.addChildAt(this.artSprite, 0);
   }
 
   cellRect(row, col) {
@@ -134,8 +155,8 @@ export class Atmosphere {
     }
   }
 
-  // Scan unseen corridors; reveal hedges near any that are now visible. Each
-  // corridor is tested only until first seen, so the scan shrinks over time.
+  // Scan unseen corridors; reveal hedge art near any now visible. Each corridor
+  // is tested only until first seen, so the scan shrinks over time.
   recompute() {
     if (!this.container || !canvas?.ready || !canvas.grid) return;
     let changed = false;
@@ -148,50 +169,43 @@ export class Atmosphere {
         if (this.isVisible(x + w / 2, y + h / 2)) { this.revealCorridor(r, c); changed = true; }
       }
     }
-    for (const poi of this.pois()) {
-      const { x, y, w, h } = this.cellRect(poi.row, poi.col);
-      this.poiVisible[`${poi.row},${poi.col}`] = this.isVisible(x + w / 2, y + h / 2);
+    for (const [r, c] of this.portalCells) {
+      const { x, y, w, h } = this.cellRect(r, c);
+      this.poiVisible[`${r},${c}`] = this.isVisible(x + w / 2, y + h / 2);
     }
-    if (changed) this.drawHedges();
+    if (changed) this.buildArtMask();
     this.drawPois();
   }
 
-  fillRect(g, x, y, w, h, color, alpha) {
-    if (typeof g.beginFill === "function") { g.beginFill(color, alpha); g.drawRect(x, y, w, h); g.endFill(); }
-    else g.rect(x, y, w, h).fill({ color, alpha });
-  }
-
-  drawHedges() {
-    if (!this.hedgeG || this.hedgeG.destroyed) return;
-    const g = this.hedgeG;
+  // Fill the mask at every revealed hedge cell + every tent cell, so the art
+  // sprite shows the real map there.
+  buildArtMask() {
+    if (!this.artMask || this.artMask.destroyed) return;
+    const g = this.artMask;
     g.clear();
-    const color = (HEDGE_RGB[0] << 16) + (HEDGE_RGB[1] << 8) + HEDGE_RGB[2];
-    for (const key of this.revealedHedges) {
-      const [r, c] = key.split(",").map(Number);
+    const fill = (r, c) => {
       const { x, y, w, h } = this.cellRect(r, c);
-      this.fillRect(g, x, y, w, h, color, 0.5);
-    }
+      if (typeof g.beginFill === "function") { g.beginFill(0xffffff, 1); g.drawRect(x, y, w, h); g.endFill(); }
+      else g.rect(x, y, w, h).fill({ color: 0xffffff, alpha: 1 });
+    };
+    for (const key of this.revealedHedges) { const [r, c] = key.split(",").map(Number); fill(r, c); }
+    for (const [r, c] of this.tentCells()) fill(r, c);
   }
 
+  // Pulsing portal hints — hidden once a token has line of sight to that cell.
   drawPois() {
     if (!this.poiG || this.poiG.destroyed) return;
     const g = this.poiG;
     g.clear();
     const pulse = 0.5 + 0.5 * Math.sin(this.phase); // 0..1
-    for (const poi of this.pois()) {
-      if (this.poiVisible[`${poi.row},${poi.col}`]) continue; // revealed → hint done
-      const { x, y, w, h } = this.cellRect(poi.row, poi.col);
-      const color = (poi.color[0] << 16) + (poi.color[1] << 8) + poi.color[2];
-      const alpha = 0.18 + 0.34 * pulse; // 0.18 .. 0.52
-      if (poi.kind === "tent") this.drawDiamond(g, x + w / 2, y + h / 2, w * 0.42, color, alpha);
-      else this.fillRect(g, x, y, w, h, color, alpha);
+    const color = (COLORS.PORTAL[0] << 16) + (COLORS.PORTAL[1] << 8) + COLORS.PORTAL[2];
+    const alpha = 0.18 + 0.34 * pulse; // 0.18 .. 0.52
+    for (const [r, c] of this.portalCells) {
+      if (this.poiVisible[`${r},${c}`]) continue; // revealed → hint done
+      const { x, y, w, h } = this.cellRect(r, c);
+      if (typeof g.beginFill === "function") { g.beginFill(color, alpha); g.drawRect(x, y, w, h); g.endFill(); }
+      else g.rect(x, y, w, h).fill({ color, alpha });
     }
-  }
-
-  drawDiamond(g, cx, cy, r, color, alpha) {
-    const pts = [cx, cy - r, cx + r, cy, cx, cy + r, cx - r, cy];
-    if (typeof g.beginFill === "function") { g.beginFill(color, alpha); g.drawPolygon(pts); g.endFill(); }
-    else g.poly(pts).fill({ color, alpha });
   }
 
   tick() {

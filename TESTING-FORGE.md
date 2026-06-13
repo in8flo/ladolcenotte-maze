@@ -246,13 +246,16 @@ replace Foundry's vision). It's **on by default**; the GM controls it from the
   players see (off by default, since you already see the whole map).
 
 What players get:
-- **Hedges fade in near where they've explored** — the maze structure draws itself
-  as a muted-green silhouette as they move, without revealing far-off paths.
-- **The entry is structure-revealed from the start** (their tokens spawn there).
-- **Pulsing hints through the fog** — the **five tents** (colored diamonds) and the
-  **8 portals** (magenta squares) pulse above the fog so players sense there are
-  multiple places to go. **A hint disappears once a token gains line of sight to
-  it** — Foundry then reveals the real thing underneath.
+- **Hedges reveal the real map art near where they've explored** — the actual
+  hedge squares bordering a corridor light up (a clipped copy of the map's own
+  background image, above the fog) as the player moves, without revealing far-off
+  paths.
+- **The five tents reveal their real 3×3 art from the start** — the actual tent
+  squares show through the fog as landmarks (no placeholders).
+- **The entry is revealed from the start** (their tokens spawn there).
+- **Portals pulse** — the **8 portals** show as pulsing magenta squares above the
+  fog so players sense where they are; a portal's pulse disappears once a token
+  gains line of sight to it (Foundry then reveals the real tile).
 
 > Performance: the layer rescans visibility on each move and ~twice a second. With
 > a handful of tokens it's negligible; if you ever feel a hitch, toggle Atmosphere
