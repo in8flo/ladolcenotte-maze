@@ -47,10 +47,12 @@ export class HordeEngine {
     return cells;
   }
 
-  // Unleash the horde (DM clicks "Start Horde")
+  // Unleash the horde (DM clicks "Start Horde").
+  // The horde starts OFF-MAP (frontRow = GRID_SIZE) and lights up NOTHING until
+  // the start delay elapses — at which point it surges onto the south edge.
   start() {
     this.active = true;
-    this.frontRow = this.config.startRow;
+    this.frontRow = GRID_SIZE;   // off-map: occupiedCells() is empty during the delay
     this.roundsElapsed = 0;
     this.pendingSprints = 0;
     this.spritesCrossed.clear();
@@ -76,15 +78,33 @@ export class HordeEngine {
 
     this.roundsElapsed++;
 
-    // Honor the start delay
-    if (this.roundsElapsed <= this.config.startDelay) {
+    // Still gathering beyond the south edge — NOTHING is on the map yet.
+    if (this.roundsElapsed < this.config.startDelay) {
       return {
         moved: false,
-        reason: `delay (${this.roundsElapsed}/${this.config.startDelay})`,
+        reason: `gathering (${this.roundsElapsed}/${this.config.startDelay})`,
         frontRow: this.frontRow,
       };
     }
 
+    // The round the delay is reached: the horde surges onto the map at the
+    // south edge for the first time (it was off-map until now).
+    if (this.frontRow >= GRID_SIZE) {
+      const sprints = this.pendingSprints;
+      this.frontRow = this.config.startRow;
+      this.pendingSprints = 0;
+      return {
+        moved: true,
+        appeared: true,
+        advance: 0,
+        sprints,
+        oldRow: GRID_SIZE,
+        frontRow: this.frontRow,
+        reachedTop: this.frontRow === 0,
+      };
+    }
+
+    // Subsequent rounds: advance north.
     const advance = this.speed + this.pendingSprints;
     const oldRow = this.frontRow;
     this.frontRow = Math.max(0, this.frontRow - advance);

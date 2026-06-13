@@ -36,6 +36,7 @@ export class LedController {
     // Render state
     this.portalPhase = 0;        // for pulsing portal animation
     this.playerPositions = {};   // name -> [row, col]
+    this.playerColors = {};      // name -> [r,g,b] (DM-configurable; overrides defaults)
     this.enabled = true;
     this.lastState = null;       // most recent computed/dispatched map
     this.testOverride = null;    // when set, render() shows this instead of game state
@@ -109,6 +110,16 @@ export class LedController {
     this.playerPositions = {};
   }
 
+  setPlayerColors(map) {
+    this.playerColors = map || {};
+  }
+
+  // Resolve a player's marker color: DM override → CONFIG.md default → a stable,
+  // saturated color derived from the name (so no one ever shows up muddy gray).
+  colorForPlayer(name) {
+    return this.playerColors[name] || PLAYER_COLORS[name] || defaultColorForName(name);
+  }
+
   // ---- Core: compute the abstract LED state ONCE ----
   // Returns { "row,col": [r,g,b] }. No I/O, no early returns — both outputs
   // consume the exact same result.
@@ -154,8 +165,7 @@ export class LedController {
     for (const [name, pos] of Object.entries(this.playerPositions)) {
       const [r, c] = pos;
       if (r < 0 || r >= GRID_SIZE || c < 0 || c >= GRID_SIZE) continue;
-      const color = PLAYER_COLORS[name] || [255, 255, 255];
-      leds[`${r},${c}`] = dim(color, BRIGHTNESS.PLAYER);
+      leds[`${r},${c}`] = dim(this.colorForPlayer(name), BRIGHTNESS.PLAYER);
     }
 
     return leds;
@@ -221,6 +231,16 @@ export class LedController {
     if (this.portalPhase > Math.PI * 2) this.portalPhase -= Math.PI * 2;
     this.render();
   }
+}
+
+// A stable, distinct marker color for any player name (so unconfigured tokens
+// get a saturated color instead of a washed-out gray). Hashes the name to a hue.
+export function defaultColorForName(name) {
+  let h = 0;
+  const s = String(name ?? "");
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  const hue = h % 360;
+  return hsvToRgb(hue, 0.85, 1);
 }
 
 // HSV (h in degrees, s/v in 0..1) -> [r,g,b] 0..255. Local helper for test patterns.

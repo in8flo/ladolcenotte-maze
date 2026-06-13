@@ -161,6 +161,55 @@ art doesn't start exactly at grid cell (0,0), nudge it:
 
 ---
 
+## New DM tools (v1.2.0)
+
+The 🎭 panel is now a draggable window that **stays where you put it** — clicking
+buttons no longer re-centers it. Drag it off to the side over your combat
+windows. (For a true separate-browser-window pop-out, install the community
+**Popout!** module; this panel is compatible with it.)
+
+**Horde now waits before appearing.** Clicking **🌊 Start Horde** lights up
+*nothing* — it just posts "The Bliss Horde has entered the maze…" to chat. The
+green wall only floods in from the south **once the Start delay round is reached**
+(e.g. round 2), then climbs as before. So you can start it at the top of combat
+without instantly catching anyone.
+
+**Split / Together is just a speed preset.** "Split party" advances the horde at
+*Split speed* (default 3 rows/round); "Together" uses *Together speed* (default 4).
+Toggle it to match how the party is behaving — they're two DM-flippable paces, not
+separate logic. Both fields are editable in the panel.
+
+**Players section** (lists each character token on the scene):
+- **Color swatch** — click to set that token's overlay marker color. Unconfigured
+  tokens now get a distinct saturated color automatically (no more gray).
+- **Alt N / − / ＋** — the per-player "alternate" tally (see Swarm below). Adjust
+  manually if needed.
+- **🌀** — Portal teleport: rolls a d8 (shown to players) and instantly drops that
+  token onto a random portal tile (excludes the top portal above Sal's tent).
+- **⛓** — Send to prison: teleports the token to the center of the red holding
+  cell (or the nearest free tile in the 3×3), and posts the escape card.
+
+**Swarm Tactics (changed).** On a failed DC Wis save, offer the player a blind
+choice:
+- **Take 2d6 psychic**, or
+- **"It ignores you"** — to the player it looks like *nothing happens*; secretly it
+  adds +1 to that character's **Alt** tally, which is how much the final Nymph's
+  charm DC will rise against them. The real cost is whispered to you only.
+
+**Prison escape card** (auto-posted on ⛓): DC 15 Athletics **or** Acrobatics/Sleight
+of Hand. On success: 1 level of exhaustion, Dorium weapon loses 2 charges, then a
+short rest with Hit Dice. (These are *noted* for you to apply — nothing is changed
+on the actor sheet automatically.)
+
+**🧱 Build Maze Walls** (Scene setup section): generates Foundry walls along every
+hedge boundary so tokens can't walk through the maze. It uses the **same grid
+offset** as the overlay — set **Maze grid offset X/Y to 7** first, confirm the
+overlay lines up, then build. It asks before creating, and offers to clear
+existing walls. To rebuild after an offset change, delete the walls (Walls layer →
+select all → delete) and run it again.
+
+---
+
 ## Definition of done (this phase)
 
 - [x] Module installs on The Forge via the manifest URL
