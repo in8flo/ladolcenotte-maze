@@ -12,6 +12,7 @@ import { Atmosphere } from "./atmosphere.js";
 import { GRID_SIZE, MAZE, CELL, findCells } from "./maze-data.js";
 
 const MODULE_ID = "ladolcenotte-maze";
+const SOCKET_NS = `module.${MODULE_ID}`;
 
 let horde = null;
 let led = null;
@@ -289,6 +290,8 @@ Hooks.once("ready", () => {
   // The atmosphere layer is player-facing — set it up for everyone (the rest of
   // this hook is GM-only).
   setupAtmosphere();
+  // Cross-client messaging (portal roll request → player; roll result → GM).
+  game.socket.on(SOCKET_NS, onLdnSocket);
   if (!game.user.isGM) return;
 
   horde = new HordeEngine();
@@ -362,11 +365,12 @@ Hooks.on("updateToken", (tokenDoc, changes, options) => {
   const skip = options?.ldnSkipTriggers === true;
   refreshPlayers({ skipTriggers: skip });
   if (!skip) {
-    // Use the change payload's final position so portal entry fires the instant
-    // they move INTO the portal, not on a later move.
+    // Use the change payload's final position so entry fires the instant they
+    // move INTO the portal/sprite, not on a later move.
     const x = ("x" in changes) ? changes.x : tokenDoc.x;
     const y = ("y" in changes) ? changes.y : tokenDoc.y;
     checkPortalEntry(tokenDoc, x, y);
+    checkSpriteEntry(tokenDoc, x, y);
   }
 });
 
@@ -385,13 +389,6 @@ function refreshPlayers({ skipTriggers = false } = {}) {
     if (debug) {
       const doc = token.document ?? token;
       console.log(`${MODULE_ID} | ${name} -> row ${row}, col ${col} (doc ${doc.x}, ${doc.y})`);
-    }
-
-    // Sprite crossing → horde sprint (suppressed for programmatic teleports).
-    if (!skipTriggers && MAZE[row]?.[col] === CELL.SPRITE) {
-      if (horde.triggerSprite(row, col)) {
-        ui.notifications?.info(`${name} disturbed a sprite! Horde will sprint +${horde.config.spriteSprint} next round.`);
-      }
     }
   }
   led.render();
@@ -648,12 +645,33 @@ function checkPortalEntry(tokenDoc, x, y) {
   const key = onPortal ? `${row},${col}` : null;
   const prev = portalState[tokenDoc.id] ?? null;
   portalState[tokenDoc.id] = key;
-  if (onPortal && key !== prev) {
-    const token = canvas.tokens.get(tokenDoc.id);
-    if (token) promptPortal(token, getPortalNumberMap()[key]);
+  if (!onPortal || key === prev) return;
+
+  const token = canvas.tokens.get(tokenDoc.id);
+  if (!token) return;
+  const portalNumber = getPortalNumberMap()[key];
+  const owner = owningPlayer(tokenDoc);
+  if (owner) {
+    // Ask the owning player to roll; their result comes back for GM approval.
+    game.socket.emit(SOCKET_NS, {
+      type: "portal-request", forUserId: owner.id,
+      tokenId: token.id, tokenName: token.name, portalNumber,
+    });
+    ui.notifications?.info(`${token.name} stepped on a portal — waiting for ${owner.name} to roll.`);
+  } else {
+    // GM-owned / no online owner → GM handles it directly.
+    promptPortal(token, portalNumber);
   }
 }
 
+// A non-GM, currently-online user who owns this token's actor.
+function owningPlayer(tokenDoc) {
+  const actor = tokenDoc.actor;
+  if (!actor) return null;
+  return game.users.find(u => u.active && !u.isGM && actor.testUserPermission(u, "OWNER")) ?? null;
+}
+
+// GM-direct fallback (GM-owned token / no online owner): roll + teleport now.
 function promptPortal(token, number) {
   new Dialog({
     title: "Portal!",
@@ -666,6 +684,112 @@ function promptPortal(token, number) {
       no: { label: "Not now" },
     },
     default: "go",
+  }).render(true);
+}
+
+// ---- Cross-client portal flow: player rolls, GM approves ----
+function onLdnSocket(data) {
+  if (!data || typeof data !== "object") return;
+  if (data.type === "portal-request" && game.user.id === data.forUserId) showPlayerPortalRoll(data);
+  else if (data.type === "portal-roll" && game.user.isGM) showGmPortalApproval(data);
+}
+
+// Player side: roll the d8 (auto-reroll if it matches the portal they're on),
+// then send the result to the GM for approval. They can also decline.
+function showPlayerPortalRoll(data) {
+  new Dialog({
+    title: "A Portal Stirs",
+    content: `<div style="padding:8px">
+      <p>Your token <strong>${data.tokenName}</strong> has stepped onto a shimmering portal.</p>
+      <p>Roll a d8 to be swept through — or step back.</p>
+    </div>`,
+    buttons: {
+      roll: {
+        icon: '<i class="fas fa-dice-d6"></i>', label: "Roll d8",
+        callback: async () => {
+          let n, tries = 0;
+          do {
+            const r = new Roll("1d8");
+            await r.evaluate({ async: true });
+            await r.toMessage({ flavor: `${data.tokenName} — portal d8` });
+            n = r.total; tries++;
+          } while (data.portalNumber && n === data.portalNumber && tries < 20);
+          game.socket.emit(SOCKET_NS, {
+            type: "portal-roll", tokenId: data.tokenId, tokenName: data.tokenName,
+            roll: n, fromUserName: game.user.name,
+          });
+          ui.notifications?.info("Rolled — waiting for the GM to confirm the portal.");
+        },
+      },
+      stay: { label: "Stay" },
+    },
+    default: "roll",
+  }).render(true);
+}
+
+// GM side: approve the player's rolled portal before the token actually moves.
+function showGmPortalApproval(data) {
+  new Dialog({
+    title: "Portal — Approve?",
+    content: `<div style="padding:8px">
+      <p><strong>${data.fromUserName}</strong> rolled a <strong>${data.roll}</strong> for <strong>${data.tokenName}</strong>.</p>
+      <p>Send them through to <strong>portal #${data.roll}</strong>?</p>
+    </div>`,
+    buttons: {
+      approve: { icon: '<i class="fas fa-check"></i>', label: "Approve teleport", callback: () => approvePortalTeleport(data.tokenId, data.roll) },
+      deny: { icon: '<i class="fas fa-times"></i>', label: "Deny" },
+    },
+    default: "approve",
+  }).render(true);
+}
+
+async function approvePortalTeleport(tokenId, n) {
+  const token = canvas.tokens.get(tokenId);
+  if (!token) { ui.notifications.warn("That token is no longer on the scene."); return; }
+  const dest = portalCellForNumber(n);
+  if (!dest) { ui.notifications.warn(`No portal numbered ${n}.`); return; }
+  await teleportTokenToCell(token, dest[0], dest[1]);
+  ChatMessage.create({ content: `🌀 <strong>${token.name}</strong> is flung to <strong>portal #${n}</strong>.` });
+}
+
+// ---- Sprite entry: GM accepts/ignores the horde sprint ----
+const spriteState = {}; // tokenId -> sprite cell key currently on, or null
+
+function checkSpriteEntry(tokenDoc, x, y) {
+  if (tokenDoc.actor?.type !== "character") return;
+  const [row, col] = cellFromTopLeft(x, y, tokenDoc);
+  const onSprite = MAZE[row]?.[col] === CELL.SPRITE;
+  const key = onSprite ? `${row},${col}` : null;
+  const prev = spriteState[tokenDoc.id] ?? null;
+  spriteState[tokenDoc.id] = key;
+  if (onSprite && key !== prev && !horde.spriteCrossed(row, col)) {
+    promptSprite(tokenDoc.name, row, col);
+  }
+}
+
+function promptSprite(name, row, col) {
+  new Dialog({
+    title: "Sprite Disturbed",
+    content: `<div style="padding:8px">
+      <p><strong>${name}</strong> moved across a sprite.</p>
+      <p>Apply a <strong>+${horde.config.spriteSprint}</strong> horde sprint next round?</p>
+    </div>`,
+    buttons: {
+      accept: {
+        icon: '<i class="fas fa-bolt"></i>', label: `Accept (+${horde.config.spriteSprint})`,
+        callback: () => {
+          if (horde.confirmSprite(row, col)) {
+            persistHorde(); led.render(); refreshPanel();
+            ChatMessage.create({
+              content: `⚡ ${name} disturbed a sprite — the horde will sprint <strong>+${horde.config.spriteSprint}</strong> next round.`,
+              whisper: ChatMessage.getWhisperRecipients("GM"),
+            });
+          }
+        },
+      },
+      ignore: { label: "Ignore" },
+    },
+    default: "accept",
   }).render(true);
 }
 
@@ -1037,7 +1161,9 @@ function buildPanelHTML(d) {
 
       <hr>
       <div class="ldn-buttons">
-        <button data-action="sprint" class="ldn-btn">+1 Manual Sprint</button>
+        <button data-action="sprint" class="ldn-btn">+1 Sprint</button>
+        <button data-action="sprint-down" class="ldn-btn">−1 Sprint</button>
+        <button data-action="sprint-clear" class="ldn-btn">Clear sprints</button>
         <button data-action="refresh" class="ldn-btn">🔄 Sync Players</button>
       </div>
 
@@ -1133,6 +1259,8 @@ function handlePanelAction(action) {
     case "mode-split": horde.mode = "split"; persistHorde(); led.render(); refreshPanel(); return;
     case "mode-together": horde.mode = "together"; persistHorde(); led.render(); refreshPanel(); return;
     case "sprint": horde.addSprint(1); persistHorde(); led.render(); refreshPanel(); return;
+    case "sprint-down": horde.addSprint(-1); persistHorde(); led.render(); refreshPanel(); return;
+    case "sprint-clear": horde.clearSprints(); persistHorde(); led.render(); refreshPanel(); return;
     case "refresh": refreshPlayers(); refreshPanel(); return;
     case "overlay-toggle": toggleOverlay(); return;
     case "prison-selected": sendSelectedToPrison(); return;

@@ -131,9 +131,28 @@ export class HordeEngine {
     return true;
   }
 
-  // Manual sprint (DM forces a +1 advance bonus next round)
+  // GM-accepted sprite cross: mark it crossed and queue the sprint bonus. The
+  // caller has already verified the cell is an un-crossed sprite.
+  confirmSprite(r, c) {
+    const key = `${r},${c}`;
+    if (this.spritesCrossed.has(key)) return false;
+    this.spritesCrossed.add(key);
+    this.pendingSprints += this.config.spriteSprint;
+    return true;
+  }
+
+  // Has this sprite already been counted?
+  spriteCrossed(r, c) {
+    return this.spritesCrossed.has(`${r},${c}`);
+  }
+
+  // Manual sprint adjust (DM). Clamped at 0 so negating can't go negative.
   addSprint(n = 1) {
-    this.pendingSprints += n;
+    this.pendingSprints = Math.max(0, this.pendingSprints + n);
+  }
+
+  clearSprints() {
+    this.pendingSprints = 0;
   }
 
   // Is a token at (row, col) inside the horde? (for Swarm Tactics)
