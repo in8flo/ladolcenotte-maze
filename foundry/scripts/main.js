@@ -169,7 +169,7 @@ Hooks.once("init", () => {
   game.settings.register(MODULE_ID, "outputMode", {
     name: "LED output mode",
     hint: "Where the computed LED state goes. 'Overlay only' needs no hardware (use this for testing on The Forge). 'Bridge' modes talk to the Python LED bridge.",
-    scope: "world", config: false, type: String, // GM controls via the panel
+    scope: "world", config: true, type: String,
     choices: {
       [OUTPUT_MODE.OVERLAY_ONLY]: "Overlay only (on-screen, no hardware)",
       [OUTPUT_MODE.OVERLAY_AND_BRIDGE]: "Overlay + LED bridge",
@@ -182,28 +182,28 @@ Hooks.once("init", () => {
   game.settings.register(MODULE_ID, "ledBridgeUrl", {
     name: "LED Bridge URL",
     hint: "WebSocket URL for the Python LED bridge (only used in a bridge mode).",
-    scope: "world", config: false, type: String, // GM controls via the panel
+    scope: "world", config: true, type: String,
     default: "ws://localhost:8765",
     onChange: (url) => { if (led) led.wsUrl = url; },
   });
 
   game.settings.register(MODULE_ID, "gridOffsetX", {
     name: "Maze grid offset — X (cells)",
-    hint: "Column of the scene grid where the maze's left edge begins. (Act 2 scene needs 7.)",
-    scope: "world", config: false, type: Number, default: 0, // GM controls via the panel
-    onChange: () => { rebuildOverlay(); if (atmosphere) atmosphere.attach(); },
+    hint: "Column of the scene grid where the maze's left edge begins. (Mike's Act 2 scene needs 7.)",
+    scope: "world", config: true, type: Number, default: 0,
+    onChange: () => { rebuildOverlay(); },
   });
   game.settings.register(MODULE_ID, "gridOffsetY", {
     name: "Maze grid offset — Y (cells)",
-    hint: "Row of the scene grid where the maze's top edge begins. (Act 2 scene needs 7.)",
-    scope: "world", config: false, type: Number, default: 0, // GM controls via the panel
-    onChange: () => { rebuildOverlay(); if (atmosphere) atmosphere.attach(); },
+    hint: "Row of the scene grid where the maze's top edge begins. (Mike's Act 2 scene needs 7.)",
+    scope: "world", config: true, type: Number, default: 0,
+    onChange: () => { rebuildOverlay(); },
   });
 
   game.settings.register(MODULE_ID, "overlayOpacity", {
     name: "Overlay opacity",
     hint: "Base opacity of the on-screen LED squares (0.05–1.0). Lower lets more maze art show through.",
-    scope: "world", config: false, type: Number, // GM controls via the panel slider
+    scope: "world", config: true, type: Number,
     range: { min: 0.05, max: 1, step: 0.05 },
     default: 0.5,
     onChange: (v) => { if (overlay) overlay.setOpacity(v); },
@@ -216,13 +216,13 @@ Hooks.once("init", () => {
   game.settings.register(MODULE_ID, "debugAlignment", {
     name: "Debug: log token cells",
     hint: "Log each token's computed (row, col) to the console when it moves, to confirm grid alignment.",
-    scope: "world", config: false, type: Boolean, default: false, // GM controls via the panel
+    scope: "world", config: true, type: Boolean, default: false,
   });
 
   game.settings.register(MODULE_ID, "disableMovementHistory", {
     name: "Hide token movement history",
     hint: "Overrides Foundry v13 so the movement path/distance no longer appears when you hover a token (cleaner combat). Existing trails are cleared when toggled.",
-    scope: "world", config: false, type: Boolean, default: true, // GM controls via the panel
+    scope: "world", config: true, type: Boolean, default: true,
     onChange: () => { clearAllMovementHistory(); },
   });
 
@@ -230,7 +230,7 @@ Hooks.once("init", () => {
   game.settings.register(MODULE_ID, "atmosphereEnabled", {
     name: "Player fog atmosphere",
     hint: "Show players maze structure + point-of-interest hints (hedges, tents, portals) above the fog, so they sense the map's design and where to explore.",
-    scope: "world", config: false, type: Boolean, default: true, // GM controls via the panel
+    scope: "world", config: true, type: Boolean, default: true,
     onChange: () => { setupAtmosphere(); },
   });
   game.settings.register(MODULE_ID, "atmospherePreviewGM", {
@@ -914,8 +914,6 @@ class HordePanel extends Application {
       bridgeConnected: led?.connected,
       offX: getSetting("gridOffsetX", 0),
       offY: getSetting("gridOffsetY", 0),
-      bridgeUrl: getSetting("ledBridgeUrl", "ws://localhost:8765"),
-      debugOn: getSetting("debugAlignment", false),
       historyOff: getSetting("disableMovementHistory", true),
       atmosphereOn: getSetting("atmosphereEnabled", true),
       atmospherePreview: getSetting("atmospherePreviewGM", false),
@@ -949,14 +947,6 @@ class HordePanel extends Application {
       const key = ev.currentTarget.dataset.portalNum;
       const n = parseInt(ev.currentTarget.value, 10);
       if (Number.isInteger(n) && n >= 1 && n <= 8) setPortalNumber(key, n);
-    });
-    html.on("change", "[data-cfg-offset]", (ev) => {
-      const key = ev.currentTarget.dataset.cfgOffset;
-      const val = parseInt(ev.currentTarget.value, 10);
-      if (Number.isInteger(val)) game.settings.set(MODULE_ID, key, val);
-    });
-    html.on("change", "[data-cfg-bridge]", (ev) => {
-      game.settings.set(MODULE_ID, "ledBridgeUrl", String(ev.currentTarget.value || ""));
     });
     html.on("input", "[data-cfg-overlay]", (ev) => {
       const val = parseFloat(ev.currentTarget.value);
@@ -1061,21 +1051,12 @@ function buildPanelHTML(d) {
       </div>
 
       <hr>
-      <div class="ldn-section-title">Setup</div>
-      <div class="ldn-config">
-        <label>Maze offset X (cells): <input type="number" data-cfg-offset="gridOffsetX" value="${d.offX}"></label>
-        <label>Maze offset Y (cells): <input type="number" data-cfg-offset="gridOffsetY" value="${d.offY}"></label>
-        <label>LED output:
-          <button data-action="cycle-output" class="ldn-btn" style="flex:0 0 auto;min-width:170px">${d.outputMode}</button>
-        </label>
-        <label>Bridge URL: <input type="text" data-cfg-bridge value="${d.bridgeUrl}" style="width:160px"></label>
-      </div>
-      <div class="ldn-hint">Act 2 scene offset is 7, 7. Click LED output to cycle modes.</div>
-      <div class="ldn-buttons" style="margin-top:8px">
+      <div class="ldn-section-title">Scene setup</div>
+      <div class="ldn-buttons">
         <button data-action="build-walls" class="ldn-btn">🧱 Build Maze Walls</button>
-        <button data-action="toggle-debug" class="ldn-btn ${d.debugOn ? 'sel' : ''}">${d.debugOn ? '🐞 Debug ON' : '🐞 Debug'}</button>
       </div>
-      <div class="ldn-buttons" style="margin-top:6px">
+      <div class="ldn-hint">Uses grid offset (${d.offX}, ${d.offY}). Set both to 7 for the Act 2 scene first.</div>
+      <div class="ldn-buttons" style="margin-top:8px">
         <button data-action="toggle-history" class="ldn-btn ${d.historyOff ? 'sel' : ''}">${d.historyOff ? '🚫 Move-trails OFF' : '👣 Move-trails ON'}</button>
         <button data-action="clear-history" class="ldn-btn">🧹 Clear trails now</button>
       </div>
@@ -1140,17 +1121,6 @@ function handlePanelAction(action) {
         .then(() => refreshPanel());
       return;
     case "atmosphere-reset": if (atmosphere) atmosphere.resetReveal(); return;
-    case "cycle-output": {
-      const order = [OUTPUT_MODE.OVERLAY_ONLY, OUTPUT_MODE.OVERLAY_AND_BRIDGE, OUTPUT_MODE.BRIDGE_ONLY];
-      const cur = getSetting("outputMode", OUTPUT_MODE.OVERLAY_ONLY);
-      const next = order[(order.indexOf(cur) + 1) % order.length];
-      game.settings.set(MODULE_ID, "outputMode", next).then(() => refreshPanel());
-      return;
-    }
-    case "toggle-debug":
-      game.settings.set(MODULE_ID, "debugAlignment", !getSetting("debugAlignment", false))
-        .then(() => refreshPanel());
-      return;
     case "led-test-panels": led.test("panels"); return;
     case "led-test-rainbow": led.test("rainbow"); return;
     case "led-clear": led.clear(); return;
