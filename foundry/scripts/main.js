@@ -239,6 +239,12 @@ Hooks.once("init", () => {
     scope: "client", config: false, type: Boolean, default: false, // GM toggles via the panel
     onChange: () => { setupAtmosphere(); },
   });
+  // Which scene the maze overlays (LED overlay + player atmosphere) appear on.
+  // Empty = legacy (show on the current scene). GM sets it from the panel.
+  game.settings.register(MODULE_ID, "mazeSceneId", {
+    scope: "world", config: false, type: String, default: "",
+    onChange: () => { reevaluateOverlay(); setupAtmosphere(); refreshPanel(); },
+  });
 
   game.keybindings.register(MODULE_ID, "toggleOverlay", {
     name: "Toggle LED overlay",
@@ -299,8 +305,7 @@ Hooks.once("ready", () => {
   applyPlayerColors();
   led.connect();
 
-  overlay.attach();
-  syncPortalLabels();
+  reevaluateOverlay(); // attach only if this is the maze scene
 
   tickInterval = setInterval(() => led.tick(), 100);
 
@@ -320,14 +325,13 @@ Hooks.once("ready", () => {
 
 Hooks.on("canvasReady", () => {
   if (!game.user.isGM || !overlay) return;
-  overlay.attach();
-  syncPortalLabels();
-  refreshPlayers();
-  clearAllMovementHistory();
+  reevaluateOverlay();              // overlay only on the maze scene
+  if (isMazeScene()) refreshPlayers();
+  clearAllMovementHistory();         // movement-history hide stays global
 });
 
-// Atmosphere layer (all users): re-attach on scene change, refresh reveal on moves.
-Hooks.on("canvasReady", () => { if (atmosphere) atmosphere.attach(); });
+// Atmosphere layer (all users): re-evaluate per scene on every scene change.
+Hooks.on("canvasReady", () => { setupAtmosphere(); });
 Hooks.on("updateToken", (tokenDoc, changes) => {
   if (atmosphere && ("x" in changes || "y" in changes)) atmosphere.recompute();
 });
@@ -847,6 +851,21 @@ function rebuildOverlay() {
 
 // ============ ATMOSPHERE (player-facing fog hints) ============
 // Players always get it (when enabled); the GM only sees it when previewing.
+// Is the active scene the one the maze overlays belong on? Empty setting =
+// legacy behavior (show on whatever scene is open).
+function isMazeScene() {
+  const id = getSetting("mazeSceneId", "");
+  if (!id) return true;
+  return canvas?.scene?.id === id;
+}
+
+// GM LED overlay: attach on the maze scene, detach elsewhere.
+function reevaluateOverlay() {
+  if (!game.user.isGM || !overlay) return;
+  if (isMazeScene()) { overlay.attach(); syncPortalLabels(); }
+  else { overlay.detach(); }
+}
+
 function atmosphereActive() {
   if (!getSetting("atmosphereEnabled", true)) return false;
   return game.user.isGM ? getSetting("atmospherePreviewGM", false) : true;
@@ -854,15 +873,13 @@ function atmosphereActive() {
 
 function setupAtmosphere() {
   if (!atmosphereActive()) { teardownAtmosphere(); return; }
-  if (!atmosphere) {
-    atmosphere = new Atmosphere();
-    atmosphere.setPortalCells(eligiblePortalCells());
-  } else {
-    atmosphere.setPortalCells(eligiblePortalCells());
-  }
-  atmosphere.setVisible(true);
-  atmosphere.attach();
+  if (!atmosphere) atmosphere = new Atmosphere();
+  atmosphere.setPortalCells(eligiblePortalCells());
   if (!atmosphereTick) atmosphereTick = setInterval(() => { if (atmosphere) atmosphere.tick(); }, 100);
+  // Scene scoping: show only on the maze scene. Detach (don't destroy) elsewhere
+  // so accumulated reveal survives switching scenes and back.
+  if (isMazeScene()) { atmosphere.setVisible(true); atmosphere.attach(); }
+  else { atmosphere.detach(); }
   refreshPanel();
 }
 
@@ -917,6 +934,12 @@ class HordePanel extends Application {
       historyOff: getSetting("disableMovementHistory", true),
       atmosphereOn: getSetting("atmosphereEnabled", true),
       atmospherePreview: getSetting("atmospherePreviewGM", false),
+      mazeSceneSet: !!getSetting("mazeSceneId", ""),
+      isMazeScene: isMazeScene(),
+      mazeSceneName: (() => {
+        const id = getSetting("mazeSceneId", "");
+        return id ? (game.scenes?.get(id)?.name ?? "(missing scene)") : "";
+      })(),
     };
   }
 
@@ -1052,7 +1075,16 @@ function buildPanelHTML(d) {
 
       <hr>
       <div class="ldn-section-title">Scene setup</div>
+      <div class="ldn-status-row">
+        <span>Maze scene:</span>
+        <strong>${d.mazeSceneSet ? d.mazeSceneName : '⚠ not set (shows on every scene)'}</strong>
+      </div>
       <div class="ldn-buttons">
+        <button data-action="set-maze-scene" class="ldn-btn ${d.isMazeScene && d.mazeSceneSet ? 'sel' : ''}">📍 Use THIS scene</button>
+        ${d.mazeSceneSet ? `<button data-action="clear-maze-scene" class="ldn-btn">Clear</button>` : ''}
+      </div>
+      <div class="ldn-hint">Open your Act 2 maze scene, then click "Use THIS scene" so the overlays only appear there.</div>
+      <div class="ldn-buttons" style="margin-top:8px">
         <button data-action="build-walls" class="ldn-btn">🧱 Build Maze Walls</button>
       </div>
       <div class="ldn-hint">Uses grid offset (${d.offX}, ${d.offY}). Set both to 7 for the Act 2 scene first.</div>
@@ -1121,6 +1153,12 @@ function handlePanelAction(action) {
         .then(() => refreshPanel());
       return;
     case "atmosphere-reset": if (atmosphere) atmosphere.resetReveal(); return;
+    case "set-maze-scene":
+      game.settings.set(MODULE_ID, "mazeSceneId", canvas?.scene?.id ?? "");
+      return;
+    case "clear-maze-scene":
+      game.settings.set(MODULE_ID, "mazeSceneId", "");
+      return;
     case "led-test-panels": led.test("panels"); return;
     case "led-test-rainbow": led.test("rainbow"); return;
     case "led-clear": led.clear(); return;
