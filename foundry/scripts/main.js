@@ -538,6 +538,22 @@ function eligiblePortalCells() {
   return portals.filter(([r, c]) => !inBox(r, c, prison) && !nearSal(r, c));
 }
 
+// The four portal cells inside the prison box (its corners). These are OUTGOING
+// ONLY: stepping onto one rolls a d8 and flings you to one of the 8 destinations,
+// but they are never a destination themselves.
+function prisonPortalCells() {
+  const prison = bbox(findCells(CELL.PRISON));
+  if (!prison) return [];
+  return findCells(CELL.PORTAL).filter(([r, c]) =>
+    r >= prison.minR && r <= prison.maxR && c >= prison.minC && c <= prison.maxC);
+}
+
+// Cells that TRIGGER a portal roll when a token steps on them: the 8 numbered
+// destinations + the 4 outgoing prison portals.
+function portalTriggerCells() {
+  return [...eligiblePortalCells(), ...prisonPortalCells()];
+}
+
 // ---- Portal numbering: each of the 8 portals carries a number 1..8 ----
 // Resolves a number for every eligible portal, filling any unset tile with a
 // row-major default so a d8 always lands somewhere.
@@ -641,7 +657,7 @@ const portalState = {}; // tokenId -> portal cell key currently occupied, or nul
 function checkPortalEntry(tokenDoc, x, y) {
   if (tokenDoc.actor?.type !== "character") return;
   const [row, col] = cellFromTopLeft(x, y, tokenDoc);
-  const onPortal = MAZE[row]?.[col] === CELL.PORTAL && eligiblePortalCells().some(([r, c]) => r === row && c === col);
+  const onPortal = MAZE[row]?.[col] === CELL.PORTAL && portalTriggerCells().some(([r, c]) => r === row && c === col);
   const key = onPortal ? `${row},${col}` : null;
   const prev = portalState[tokenDoc.id] ?? null;
   portalState[tokenDoc.id] = key;
@@ -794,9 +810,10 @@ function promptSprite(name, row, col) {
 }
 
 // ============ PRISON (teleport + escape) ============
-// The prison is the 3×3 box bounding the red prison cells; center is preferred.
+// Captured tokens go ONLY on the 5 red prison cells (the cross), never the four
+// corner portals — so they don't get flung away the instant they're imprisoned.
 function prisonCellsOrdered() {
-  const cells = findCells(CELL.PRISON);
+  const cells = findCells(CELL.PRISON); // the 5 cross cells
   if (!cells.length) return { center: [15, 12], ordered: [[15, 12]] };
   let minR = 99, maxR = -1, minC = 99, maxC = -1;
   for (const [r, c] of cells) {
@@ -804,22 +821,11 @@ function prisonCellsOrdered() {
     minC = Math.min(minC, c); maxC = Math.max(maxC, c);
   }
   const center = [Math.round((minR + maxR) / 2), Math.round((minC + maxC) / 2)];
-  const box = [];
-  for (let r = minR; r <= maxR; r++) for (let c = minC; c <= maxC; c++) box.push([r, c]);
-  const isPrison = (r, c) => MAZE[r]?.[c] === CELL.PRISON;
-  // Center first, then the other actual prison (red) cells, then the rest of the box.
-  box.sort((a, b) => {
-    const score = ([r, c]) => {
-      if (r === center[0] && c === center[1]) return 0;
-      if (isPrison(r, c)) return 1;
-      return 2;
-    };
-    const sa = score(a), sb = score(b);
-    if (sa !== sb) return sa - sb;
-    return (Math.abs(a[0] - center[0]) + Math.abs(a[1] - center[1])) -
-           (Math.abs(b[0] - center[0]) + Math.abs(b[1] - center[1]));
-  });
-  return { center, ordered: box };
+  // Center first, then the other prison cells by distance from center.
+  const ordered = cells.slice().sort((a, b) =>
+    (Math.abs(a[0] - center[0]) + Math.abs(a[1] - center[1])) -
+    (Math.abs(b[0] - center[0]) + Math.abs(b[1] - center[1])));
+  return { center, ordered };
 }
 
 // ⛓ Teleport into the cell only — the escape check is posted separately, by the
