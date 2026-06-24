@@ -864,7 +864,7 @@ function postEscapeCard(name) {
         <p><strong>On a success they break free, but:</strong></p>
         <ul>
           <li>Gain <strong>1 level of exhaustion</strong></li>
-          <li>Their <strong>Dorium weapon loses 2 standard charges</strong></li>
+          <li>Their <strong>Dorium item loses 2 standard charges</strong></li>
           <li>They get a <strong>short rest</strong> and may <strong>spend Hit Dice</strong> to recover HP</li>
         </ul>
       </div>`,
@@ -1041,10 +1041,10 @@ const MECHANICS = [
     label: "✨ Nymph Sprites",
     content: `
       <div class="ldn-chat-card">
-        <h3>Nymph Sprites — A Surge of Speed</h3>
-        <p>When you pass over or land on a glimmering nymph-sprite, fey quickness floods your legs. Your movement this turn becomes:</p>
-        <p style="text-align:center;font-size:1.15em"><strong>1d6 + (your Speed ÷ 10, rounded up)</strong></p>
-        <p>You may move <strong>up to</strong> that many squares this turn — you don't have to use it all.</p>
+        <h3>Nymph Sprites — The Horde Quickens</h3>
+        <p>The hedges hide little glimmering nymph-sprites. Pass over one — or land on it — and you <strong>disturb it</strong>, and the Bliss Horde answers.</p>
+        <p>Each sprite you cross spurs the green tide on: the <strong>Bliss Horde gains a sprint</strong>, advancing <strong>one extra row</strong> beyond its normal progression next round.</p>
+        <p>Tread carefully — every sprite you wake brings your doom a little closer, a little faster.</p>
       </div>`,
   },
   {
@@ -1072,7 +1072,7 @@ const MECHANICS = [
         <p>On a success you escape — but the ordeal costs you:</p>
         <ul>
           <li><strong>1 level of exhaustion</strong></li>
-          <li>your <strong>Doryum item loses 2 standard charges</strong></li>
+          <li>your <strong>Dorium item loses 2 standard charges</strong></li>
           <li>you gain the benefit of a <strong>short rest</strong> and may spend <strong>Hit Dice</strong> to recover HP</li>
         </ul>
       </div>`,
