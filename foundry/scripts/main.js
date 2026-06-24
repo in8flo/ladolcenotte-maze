@@ -1019,6 +1019,71 @@ function teardownAtmosphere() {
   refreshPanel();
 }
 
+// ============ MECHANICS (one-click player handouts) ============
+// Clicking one posts a public chat card explaining the mechanic to players —
+// re-post any time as a reference.
+const MECHANICS = [
+  {
+    key: "bliss",
+    label: "🌊 Bliss Horde",
+    content: `
+      <div class="ldn-chat-card">
+        <h3>The Bliss Horde — The Ecstasy</h3>
+        <p>When the green tide's rapture washes over you, you must choose:</p>
+        <ul>
+          <li><strong>Resist it.</strong> Fighting the bliss racks your mind — take <strong>2d6 psychic damage</strong>.</li>
+          <li><strong>Embrace the Bliss.</strong> Stop struggling. There is no pain here, no damage — only a warm, weightless belonging, every ache in you finally gone quiet. The Horde asks nothing of you… only that you drift, just a little, toward its gentle will. Each time you let go the embrace grows sweeter — and a little harder to leave.</li>
+        </ul>
+      </div>`,
+  },
+  {
+    key: "sprites",
+    label: "✨ Nymph Sprites",
+    content: `
+      <div class="ldn-chat-card">
+        <h3>Nymph Sprites — A Surge of Speed</h3>
+        <p>When you pass over or land on a glimmering nymph-sprite, fey quickness floods your legs. Your movement this turn becomes:</p>
+        <p style="text-align:center;font-size:1.15em"><strong>1d6 + (your Speed ÷ 10, rounded up)</strong></p>
+        <p>You may move <strong>up to</strong> that many squares this turn — you don't have to use it all.</p>
+      </div>`,
+  },
+  {
+    key: "portals",
+    label: "🌀 Portals",
+    content: `
+      <div class="ldn-chat-card">
+        <h3>Portals — Where the Hedges Fold</h3>
+        <p>Step onto a portal and the maze folds around you. Roll <strong>1d8</strong> — you are swept to the portal marked with that number, somewhere else in the hedges.</p>
+        <p>You choose whether to step in; the destination is the die's whim.</p>
+      </div>`,
+  },
+  {
+    key: "prison",
+    label: "⛓ Prison",
+    content: `
+      <div class="ldn-chat-card">
+        <h3>The Prison — When You Fall</h3>
+        <p>If you fail <strong>three death saving throws</strong>, you do not die — you wake in the <strong>Prison</strong> at the maze's heart.</p>
+        <p>To break free, make a <strong>DC 15</strong> check:</p>
+        <ul>
+          <li><strong>Athletics</strong> (force the bars), or</li>
+          <li><strong>Acrobatics</strong> or <strong>Sleight of Hand</strong> (slip the lock)</li>
+        </ul>
+        <p>On a success you escape — but the ordeal costs you:</p>
+        <ul>
+          <li><strong>1 level of exhaustion</strong></li>
+          <li>your <strong>Doryum item loses 2 standard charges</strong></li>
+          <li>you gain the benefit of a <strong>short rest</strong> and may spend <strong>Hit Dice</strong> to recover HP</li>
+        </ul>
+      </div>`,
+  },
+];
+
+function postMechanic(key) {
+  const m = MECHANICS.find(x => x.key === key);
+  if (m) ChatMessage.create({ content: m.content }); // public — players see it
+}
+
 // ============ DM CONTROL PANEL (persistent Application) ============
 // A real Application (not a re-created Dialog) so it keeps its position when the
 // user drags it aside and re-renders in place on every state change. Also works
@@ -1087,6 +1152,10 @@ class HordePanel extends Application {
       ev.preventDefault();
       const el = ev.currentTarget;
       handlePlayerAction(el.dataset.playerAction, el.dataset.name);
+    });
+    html.on("click", "[data-mechanic]", (ev) => {
+      ev.preventDefault();
+      postMechanic(ev.currentTarget.dataset.mechanic);
     });
     html.on("change", "[data-cfg]", (ev) => {
       const key = ev.currentTarget.dataset.cfg;
@@ -1172,6 +1241,13 @@ function buildPanelHTML(d) {
         <button data-action="sprint-clear" class="ldn-btn">Clear sprints</button>
         <button data-action="refresh" class="ldn-btn">🔄 Sync Players</button>
       </div>
+
+      <hr>
+      <div class="ldn-section-title">Mechanics (post to players)</div>
+      <div class="ldn-buttons">
+        ${MECHANICS.map(m => `<button data-mechanic="${m.key}" class="ldn-btn">${m.label}</button>`).join("")}
+      </div>
+      <div class="ldn-hint">Posts a public card explaining the mechanic — re-post any time as a reference.</div>
 
       <hr>
       <div class="ldn-section-title">Players</div>
