@@ -1031,8 +1031,8 @@ const MECHANICS = [
         <h3>The Bliss Horde — The Ecstasy</h3>
         <p>When the green tide's rapture washes over you, you must choose:</p>
         <ul>
-          <li><strong>Resist it.</strong> Fighting the bliss racks your mind — take <strong>2d6 psychic damage</strong>.</li>
-          <li><strong>Embrace the Bliss.</strong> Stop struggling. There is no pain here, no damage — only a warm, weightless belonging, every ache in you finally gone quiet. The Horde asks nothing of you… only that you drift, just a little, toward its gentle will. Each time you let go the embrace grows sweeter — and a little harder to leave.</li>
+          <li><strong>Resist it</strong> — make a <strong>DC 14 Wisdom saving throw</strong> to hold your mind against the ecstasy.</li>
+          <li><strong>Embrace the Bliss</strong> — stop struggling. There's no pain here, no damage. You drift into the ecstasy… and you trigger a hidden mechanic.</li>
         </ul>
       </div>`,
   },
@@ -1062,14 +1062,13 @@ const MECHANICS = [
     label: "⛓ Prison",
     content: `
       <div class="ldn-chat-card">
-        <h3>The Prison — When You Fall</h3>
-        <p>If you fail <strong>three death saving throws</strong>, you do not die — you wake in the <strong>Prison</strong> at the maze's heart.</p>
-        <p>To break free, make a <strong>DC 15</strong> check:</p>
+        <h3>The Prison</h3>
+        <p><strong>Break Free</strong> — make a <strong>DC 15</strong> check:</p>
         <ul>
           <li><strong>Athletics</strong> (force the bars), or</li>
           <li><strong>Acrobatics</strong> or <strong>Sleight of Hand</strong> (slip the lock)</li>
         </ul>
-        <p>On a success you escape — but the ordeal costs you:</p>
+        <p><strong>On Success: You Escape</strong> — but the ordeal costs you:</p>
         <ul>
           <li><strong>1 level of exhaustion</strong></li>
           <li>your <strong>Dorium item loses 2 standard charges</strong></li>

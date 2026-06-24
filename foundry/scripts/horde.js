@@ -13,7 +13,7 @@ export class HordeEngine {
       togetherSpeed: 4,     // rows/round when party sticks together
       spriteSprint: 1,      // extra rows when a sprite is crossed
       startRow: 24,         // south edge
-      swarmDC: 13,          // Wisdom save DC
+      swarmDC: 14,          // Wisdom save DC
       swarmDamage: "2d6",   // psychic damage on failed save
     };
 
