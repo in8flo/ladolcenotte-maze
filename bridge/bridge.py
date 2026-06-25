@@ -318,6 +318,7 @@ def calibrate(pico, mapping):
    row R           light grid row R   (all 25 cols)   [a horizontal line]
    quad Q          fill quadrant Q
    walk Q [sec]    step one LED through quadrant Q's strip 0..192 (maps order)
+   ruler Q [step]  light markers: RED every 50, BLUE every [step] (default 10)
    color R G B     set the paint color (default white)
    clear           all off
    info            show mapping totals + knobs
@@ -368,6 +369,18 @@ def calibrate(pico, mapping):
                         pico.set_led(q, idx, *paint)
             elif cmd == "quad":
                 pico.fill(int(p[1]), *paint)
+            elif cmd == "ruler":
+                pico.clear()
+                q = int(p[1]) if len(p) > 1 else 0
+                step = int(p[2]) if len(p) > 2 else 10
+                for idx in range(LEDS_PER_QUADRANT):
+                    if idx % step != 0:
+                        continue
+                    if idx % 50 == 0:
+                        pico.set_led(q, idx, 255, 0, 0)    # RED every 50
+                    else:
+                        pico.set_led(q, idx, 0, 80, 255)   # BLUE every `step`
+                print(f"  ruler q{q}: RED = every 50, BLUE = every {step}")
             elif cmd == "walk":
                 q = int(p[1])
                 delay = float(p[2]) if len(p) > 2 else 0.15
@@ -380,7 +393,7 @@ def calibrate(pico, mapping):
                 print("  ? unknown command")
             # Show what the firmware echoed/replied — only for commands that actually
             # send something to the Pico.
-            if cmd in ("clear", "cell", "raw", "col", "row", "quad", "walk"):
+            if cmd in ("clear", "cell", "raw", "col", "row", "quad", "walk", "ruler"):
                 resp = pico.read_response()
                 if resp:
                     print("  pico:", resp.replace("\r", " ").replace("\n", " | "))
