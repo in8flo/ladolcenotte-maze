@@ -15,10 +15,11 @@ HARDWARE (finalized):
 
 USAGE:
   pip install websockets pyserial
-  python bridge.py --list-ports         # find the Pico's COM port
-  python bridge.py --port COM5          # run the live bridge
-  python bridge.py --port COM5 --calibrate   # interactive mapping/calibration
-  python bridge.py                      # no port -> dry-run (logs, no LEDs)
+  python bridge.py                      # auto-detects the Pico and runs (normal use)
+  python bridge.py --calibrate          # auto-detect + interactive mapping/calibration
+  python bridge.py --list-ports         # show serial ports (marks the auto-detected Pico)
+  python bridge.py --port COM5          # force a specific port (skips auto-detect)
+  python bridge.py --dry                # force dry-run (logs, no LEDs)
 
 The grid->LED mapping below is PARAMETERIZED. The 2-1-2 pattern maths to 190/quad
 but the strips measured 193, so the alignment must be confirmed on hardware --
@@ -72,6 +73,32 @@ FIRST_RUN_TOP_TO_BOTTOM = True
 DEFAULT_BRIGHTNESS = 1.0   # extra scale on top of the colors (firmware also dims)
 DEFAULT_MIN = 0            # skip cells whose max channel < this (e.g. 25 hides the
                            # dim corridor ambient so only features/players/horde light)
+
+# Raspberry Pi USB vendor ID — the Pico / CircuitPython board presents this.
+PICO_VID = 0x2E8A
+
+
+def autodetect_port():
+    """Find the Pico's serial port with no hand-typed COM number (handles a
+    different laptop where the port is COM7/COM12/whatever). Returns the device
+    string, or None if it can't tell."""
+    if serial is None:
+        return None
+    ports = list(serial.tools.list_ports.comports())
+    # 1) Best signal: the Raspberry Pi USB vendor ID. Reliable across machines.
+    for p in ports:
+        if getattr(p, "vid", None) == PICO_VID:
+            return p.device
+    # 2) Fall back to recognizable descriptions.
+    keys = ("circuitpython", "pico", "board cdc", "usb serial device")
+    for p in ports:
+        desc = (p.description or "").lower()
+        if any(k in desc for k in keys):
+            return p.device
+    # 3) Last resort: if there's exactly one serial port, it's almost certainly it.
+    if len(ports) == 1:
+        return ports[0].device
+    return None
 
 
 # ============================================================ MAPPING
@@ -379,6 +406,7 @@ def main():
                     help="skip cells dimmer than this (e.g. 25 to hide ambient)")
     ap.add_argument("--list-ports", action="store_true", help="list serial ports and exit")
     ap.add_argument("--calibrate", action="store_true", help="interactive mapping/calibration")
+    ap.add_argument("--dry", action="store_true", help="force dry-run; skip Pico auto-detect")
     ap.add_argument("--verbose", action="store_true", help="log commands in dry-run")
     args = ap.parse_args()
 
@@ -389,9 +417,22 @@ def main():
         ports = list(serial.tools.list_ports.comports())
         if not ports:
             print("No serial ports found.")
+        detected = autodetect_port()
         for p in ports:
-            print(f"  {p.device}  -  {p.description}")
+            mark = "  <-- Pico (auto-detected)" if p.device == detected else ""
+            print(f"  {p.device}  -  {p.description}{mark}")
         return
+
+    # Resolve the port: explicit --port wins; otherwise auto-detect the Pico so the
+    # bridge "just runs" on any machine. --dry forces a no-LED dry-run.
+    port = args.port
+    if not port and not args.dry:
+        port = autodetect_port()
+        if port:
+            print(f"[bridge] auto-detected Pico on {port}")
+        else:
+            print("[bridge] no Pico auto-detected — running dry (no LEDs). "
+                  "Plug the Pico in (or run --list-ports / pass --port COMx).")
 
     mapping = MazeMapping()
     if mapping.total != LEDS_PER_QUADRANT:
@@ -399,7 +440,7 @@ def main():
               f"strips have {LEDS_PER_QUADRANT}. Confirm the LED_PER_TILE pattern with "
               f"--calibrate (the {LEDS_PER_QUADRANT - mapping.total} extra LEDs need placing).")
 
-    pico = Pico(args.port, args.baud, args.brightness, args.verbose)
+    pico = Pico(port, args.baud, args.brightness, args.verbose)
 
     try:
         if args.calibrate:

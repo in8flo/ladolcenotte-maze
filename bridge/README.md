@@ -6,13 +6,23 @@ LED indices and drives the strips via the serial-listener firmware.
 
 ## Run it
 
+**Easiest:** plug in the Pico and **double-click `start-bridge.bat`**. It installs the
+two libraries the first time, auto-detects the Pico's port, and runs. No typing.
+
+From a terminal instead:
+
 ```bash
 pip install websockets pyserial
 
-python bridge.py --list-ports        # find the Pico's COM port
-python bridge.py --port COM5         # live bridge
-python bridge.py                     # no port → dry-run (logs, no LEDs)
+python bridge.py                     # auto-detects the Pico and runs (normal use)
+python bridge.py --calibrate         # auto-detect + interactive tile mapping
+python bridge.py --list-ports        # show ports (marks the auto-detected Pico)
+python bridge.py --port COM5         # force a port (skips auto-detect)
+python bridge.py --dry               # force dry-run (logs, no LEDs)
 ```
+
+The port no longer needs to be typed — the bridge finds the Pico by its USB vendor
+ID, so it works on any machine (the laptop's COM number can differ from the desktop's).
 
 Then in Foundry (module settings, **Configure Settings → La Dolce Notte**):
 - **LED output mode** → `Overlay + LED bridge` (keep the on-screen view too) or
