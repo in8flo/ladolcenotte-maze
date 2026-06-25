@@ -25,11 +25,18 @@ the Foundry side.
 
 ## Hardware state
 
-- **1 Pico 2 (non-W)**, quadrants on **GP0, GP2, GP3, GP4, GP5** (GP1 is dead).
+- **1 Pico 2 (non-W)**. All **5 quadrants wired**:
+  - Q1 → quad 0 → **GP0**
+  - Q2 → quad 1 → **GP2**
+  - Q3 → quad 2 → **GP13** (pin 17)
+  - Q4 → quad 3 → **GP14** (pin 19)
+  - Q5 → quad 4 → **GP15** (pin 20)
+  - GP1 is dead — skipped.
 - **193 LEDs/quadrant**, 5 quadrants. Each quadrant = 5 grid columns × 25 rows,
   vertical serpentine.
-- Only **GP0 + GP2** are wired today. The firmware's `PINS = [board.GP0, board.GP2]`
-  — add `board.GP3, board.GP4, board.GP5` as you wire the rest.
+- Grounds: Pico pin 3 (GND) → left negative bar (LED strips); pin 38 (GND) →
+  right negative bar (power supplies).
+- Firmware `PINS = [board.GP0, board.GP2, board.GP13, board.GP14, board.GP15]`.
 
 ## Calibrating the cell → LED map (important)
 

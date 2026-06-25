@@ -23,8 +23,11 @@ import time
 NUM_LEDS = 193
 BRIGHTNESS = 0.3
 
-# Quadrant index -> data pin. Add more as you wire them. Skips dead GP1.
-PINS = [board.GP0, board.GP2]   # later: board.GP3, board.GP4, board.GP5
+# Quadrant index (0-based) -> data pin. GP1 is dead on this board.
+#   quad 0 = Q1 = GP0        quad 3 = Q4 = GP14 (pin 19)
+#   quad 1 = Q2 = GP2        quad 4 = Q5 = GP15 (pin 20)
+#   quad 2 = Q3 = GP13 (pin 17)
+PINS = [board.GP0, board.GP2, board.GP13, board.GP14, board.GP15]
 
 strips = [
     neopixel.NeoPixel(p, NUM_LEDS, brightness=BRIGHTNESS, auto_write=False)
