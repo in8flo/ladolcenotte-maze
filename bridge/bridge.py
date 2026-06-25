@@ -62,7 +62,7 @@ LEDS_PER_QUADRANT = 193  # empirical, per BRIDGE-HANDOFF
 COLUMN_ORDER = [0, 1, 2, 3, 4]
 # COLUMN_LEDS: how many LEDs are in each run, in COLUMN_ORDER order. Must sum to
 #   LEDS_PER_QUADRANT (193). Refine from the `walk 0` U-turn points.
-COLUMN_LEDS = [39, 39, 39, 38, 38]
+COLUMN_LEDS = [38, 39, 39, 39, 38]
 # FIRST_RUN_TOP_TO_BOTTOM: does the first column run go row 0 (top) -> row 24
 #   (bottom)? Subsequent runs alternate. (Flipped from the first build per Mike.)
 FIRST_RUN_TOP_TO_BOTTOM = True
