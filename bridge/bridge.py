@@ -1,277 +1,375 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
-La Dolce Notte — LED Bridge
+La Dolce Notte - LED Bridge   (Foundry WebSocket  ->  Pico USB serial)
 
-Runs on the DM laptop. Bridges Foundry VTT (WebSocket) to the 4 Pico
-panel controllers (USB serial). Translates 25x25 grid cell colors into
-per-LED serial commands using the serpentine LED map.
+Runs on the DM laptop. The Foundry module computes an abstract cell->color map
+and pushes it over WebSocket; this bridge translates each maze cell into physical
+LED indices and sends them to the Pico over USB serial, using the proven
+serial-listener protocol.
 
-Usage:
-    pip install websockets pyserial
-    python bridge.py
+HARDWARE (finalized):
+  * ONE Pico 2 (non-W) drives 5 quadrants on GP0, GP2, GP3, GP4, GP5 (GP1 dead).
+  * 193 LEDs per quadrant (empirical), 965 total.
+  * Each quadrant = 5 grid columns x 25 rows, VERTICAL serpentine (4 U-turns).
+  * 2-1-2 LEDs-per-tile (some tiles 1 LED, some 2).
 
-Then start your Foundry session. The module connects automatically.
+USAGE:
+  pip install websockets pyserial
+  python bridge.py --list-ports         # find the Pico's COM port
+  python bridge.py --port COM5          # run the live bridge
+  python bridge.py --port COM5 --calibrate   # interactive mapping/calibration
+  python bridge.py                      # no port -> dry-run (logs, no LEDs)
 
-Config: edit SERIAL_PORTS below to match your system.
-  Windows: "COM3", "COM4", ...
-  Mac/Linux: "/dev/ttyACM0", "/dev/ttyACM1", ...
-Find them: `python -m serial.tools.list_ports`
+The grid->LED mapping below is PARAMETERIZED. The 2-1-2 pattern maths to 190/quad
+but the strips measured 193, so the alignment must be confirmed on hardware --
+use --calibrate (the `walk` and `cell` commands) to verify and tweak the four
+MAPPING knobs near the top of this file.
 """
 
+import argparse
 import asyncio
 import json
 import sys
+import time
 
 try:
     import websockets
 except ImportError:
-    print("ERROR: pip install websockets")
-    sys.exit(1)
-
+    websockets = None
 try:
     import serial
+    import serial.tools.list_ports
 except ImportError:
-    print("ERROR: pip install pyserial")
-    sys.exit(1)
+    serial = None
 
-# ============ CONFIG ============
+# ============================================================ CONFIG
 WS_HOST = "localhost"
 WS_PORT = 8765
-
-# Serial ports for each Pico (panel 0-3). Edit to match your system.
-SERIAL_PORTS = {
-    0: "COM3",   # rows 0-6
-    1: "COM4",   # rows 7-12
-    2: "COM5",   # rows 13-18
-    3: "COM6",   # rows 19-24
-}
 SERIAL_BAUD = 115200
 
-GRID_SIZE = 25
-TILE_MM = 50.8
-LED_SPACING_MM = 33.3
+GRID = 25
+NUM_QUADRANTS = 5
+QUAD_COLS = 5            # grid columns per quadrant (5 cols x 5 quads = 25)
+LEDS_PER_QUADRANT = 193  # empirical, per BRIDGE-HANDOFF
 
-# LED-per-tile pattern (from CONFIG.md)
-LED_PATTERN = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]
-LEDS_PER_ROW = sum(LED_PATTERN)  # 38
+# ---- MAPPING KNOBS (confirm these on hardware with --calibrate) ----
+# Per-tile LED counts ALONG ONE vertical column run (25 entries, strip order).
+# From CONFIG.md's 2-1-2 pattern; sums to 38 -> 5 runs = 190 (vs 193 measured).
+LED_PER_TILE = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]
+# Order the strip visits the 5 local columns of a quadrant (0=leftmost grid col
+# of the quadrant). [0,1,2,3,4] = strip starts at the quadrant's left column.
+COLUMN_ORDER = [0, 1, 2, 3, 4]
+# Direction of the FIRST run: True = bottom(row 24)->top(row 0); then alternates.
+FIRST_RUN_UP = True
+# Pin order is implied by the firmware's PINS list (quad 0 = GP0, quad 1 = GP2...).
 
-# Which rows each panel owns
-PANEL_ROWS = {
-    0: list(range(0, 7)),
-    1: list(range(7, 13)),
-    2: list(range(13, 19)),
-    3: list(range(19, 25)),
-}
-
-
-# ============ LED MAP ============
-def build_led_map():
-    """
-    Build (row, col) -> (panel_id, [local_led_indices]).
-
-    Within each panel the strip snakes through rows: even rows L->R,
-    odd rows R->L. Indices are LOCAL to each panel (each Pico's strip
-    starts at 0).
-    """
-    led_map = {}
-
-    for panel_id, rows in PANEL_ROWS.items():
-        local_idx = 0
-        for row in rows:
-            if row % 2 == 0:
-                col_order = range(GRID_SIZE)        # left to right
-            else:
-                col_order = range(GRID_SIZE - 1, -1, -1)  # right to left
-
-            for col in col_order:
-                n_leds = LED_PATTERN[col]
-                indices = list(range(local_idx, local_idx + n_leds))
-                led_map[(row, col)] = (panel_id, indices)
-                local_idx += n_leds
-
-    return led_map
+# ---- Show tuning ----
+DEFAULT_BRIGHTNESS = 1.0   # extra scale on top of the colors (firmware also dims)
+DEFAULT_MIN = 0            # skip cells whose max channel < this (e.g. 25 hides the
+                           # dim corridor ambient so only features/players/horde light)
 
 
-LED_MAP = build_led_map()
+# ============================================================ MAPPING
+class MazeMapping:
+    """Builds (and caches) the tile -> LED-index lookup for one quadrant, then
+    answers cell_to_leds(row, col) for the whole 25x25 grid."""
+
+    def __init__(self):
+        self.quad_map = {}   # (local_col, grid_row) -> [led_index, ...]
+        self.total = 0
+        self._build()
+
+    def _build(self):
+        idx = 0
+        for run_i, local_col in enumerate(COLUMN_ORDER):
+            up = FIRST_RUN_UP if (run_i % 2 == 0) else (not FIRST_RUN_UP)
+            for pos in range(GRID):                 # position along the strip in this run
+                grid_row = (GRID - 1 - pos) if up else pos
+                count = LED_PER_TILE[pos] if pos < len(LED_PER_TILE) else 1
+                self.quad_map[(local_col, grid_row)] = [idx + k for k in range(count)]
+                idx += count
+        self.total = idx
+
+    def cell_to_leds(self, row, col):
+        """-> list of (quadrant, led_index)."""
+        if not (0 <= row < GRID and 0 <= col < GRID):
+            return []
+        q = col // QUAD_COLS
+        local_col = col % QUAD_COLS
+        if q >= NUM_QUADRANTS:
+            return []
+        out = []
+        for idx in self.quad_map.get((local_col, row), []):
+            if 0 <= idx < LEDS_PER_QUADRANT:
+                out.append((q, idx))
+        return out
 
 
-def cell_to_leds(row, col):
-    """Return (panel_id, [local indices]) for a grid cell, or None."""
-    return LED_MAP.get((row, col))
+# ============================================================ PICO LINK
+class Pico:
+    """Thin wrapper over the serial-listener firmware. Graceful when absent."""
 
-
-# ============ SERIAL ============
-class PanelSerial:
-    """Manages a serial connection to one Pico, with a frame buffer."""
-
-    def __init__(self, panel_id, port):
-        self.panel_id = panel_id
-        self.port = port
+    def __init__(self, port, baud=SERIAL_BAUD, brightness=DEFAULT_BRIGHTNESS, verbose=False):
+        self.brightness = brightness
+        self.verbose = verbose
         self.ser = None
-        self.updates = []  # list of (local_idx, r, g, b)
-
-    def connect(self):
-        try:
-            self.ser = serial.Serial(self.port, SERIAL_BAUD, timeout=0.1)
-            print(f"  Panel {self.panel_id}: connected on {self.port}")
-            return True
-        except Exception as e:
-            print(f"  Panel {self.panel_id}: FAILED on {self.port} — {e}")
-            self.ser = None
-            return False
-
-    def queue(self, local_idx, r, g, b):
-        self.updates.append((local_idx, r, g, b))
-
-    def flush(self):
-        """Send all queued updates as one frame, then a show command."""
-        if not self.ser:
-            self.updates = []
-            return
-
-        if self.updates:
-            count = len(self.updates)
-            frame = bytearray([0xFF, 0xFF, count & 0xFF, (count >> 8) & 0xFF])
-            for idx, r, g, b in self.updates:
-                frame += bytes([idx & 0xFF, (idx >> 8) & 0xFF, r, g, b])
-            frame.append(0xFE)
+        self.tx = 0
+        if port and serial is not None:
             try:
-                self.ser.write(frame)
+                self.ser = serial.Serial(port, baud, timeout=0.05)
+                time.sleep(2.0)  # let the board reset/boot
+                self._drain()
+                print(f"[bridge] connected to Pico on {port}")
             except Exception as e:
-                print(f"  Panel {self.panel_id} write error: {e}")
-            self.updates = []
+                print(f"[bridge] could NOT open {port} ({e}); running dry (no LEDs).")
+                self.ser = None
+        else:
+            why = "no --port given" if not port else "pyserial not installed"
+            print(f"[bridge] {why}; running dry (no LEDs).")
 
-        # Show command
+    def _drain(self):
+        if self.ser and self.ser.in_waiting:
+            try:
+                self.ser.read(self.ser.in_waiting)
+            except Exception:
+                pass
+
+    def _send(self, line):
+        self.tx += 1
+        if self.ser is None:
+            if self.verbose:
+                print(f"[dry] {line}")
+            return
         try:
-            self.ser.write(bytes([0xFF, 0xFF, 0x00, 0x00, 0xFE]))
-        except Exception:
-            pass
+            self.ser.write((line + "\n").encode())
+            self._drain()
+        except Exception as e:
+            print(f"[bridge] serial write failed ({e})")
+
+    def _scale(self, v):
+        return max(0, min(255, int(v * self.brightness)))
+
+    def set_led(self, q, idx, r, g, b):
+        self._send(f"{q},{idx},{self._scale(r)},{self._scale(g)},{self._scale(b)}")
+
+    def fill(self, q, r, g, b):
+        self._send(f"fill,{q},{self._scale(r)},{self._scale(g)},{self._scale(b)}")
+
+    def all(self, r, g, b):
+        self._send(f"all,{self._scale(r)},{self._scale(g)},{self._scale(b)}")
 
     def clear(self):
-        """Turn all LEDs off."""
-        if not self.ser:
-            return
-        n = {0: 266, 1: 228, 2: 228, 3: 228}[self.panel_id]
-        for i in range(n):
-            self.queue(i, 0, 0, 0)
-        self.flush()
+        self._send("clear")
 
-
-panels = {pid: PanelSerial(pid, port) for pid, port in SERIAL_PORTS.items()}
-
-
-def connect_all():
-    print("Connecting to panels...")
-    ok = 0
-    for p in panels.values():
-        if p.connect():
-            ok += 1
-    print(f"{ok}/4 panels connected.")
-    if ok == 0:
-        print("WARNING: no panels connected. Running in dry-run mode (state logged only).")
-    return ok
-
-
-# ============ STATE HANDLERS ============
-def apply_led_state(leds_dict):
-    """
-    leds_dict: { "row,col": [r,g,b], ... }
-    Routes each cell's color to the right panel + local LED indices.
-    """
-    # Reset queues
-    for p in panels.values():
-        p.updates = []
-
-    for key, rgb in leds_dict.items():
-        try:
-            row_s, col_s = key.split(",")
-            row, col = int(row_s), int(col_s)
-        except ValueError:
-            continue
-        r, g, b = rgb
-        mapping = cell_to_leds(row, col)
-        if mapping is None:
-            continue
-        panel_id, indices = mapping
-        for idx in indices:
-            panels[panel_id].queue(idx, r, g, b)
-
-    for p in panels.values():
-        p.flush()
-
-
-def clear_all():
-    for p in panels.values():
-        p.clear()
-
-
-# ============ WEBSOCKET SERVER ============
-async def handler(websocket):
-    print("Foundry connected.")
-    try:
-        async for message in websocket:
+    def close(self):
+        if self.ser:
             try:
-                msg = json.loads(message)
-            except json.JSONDecodeError:
+                self.clear()
+                self.ser.close()
+            except Exception:
+                pass
+
+
+# ============================================================ RENDERER
+class Renderer:
+    """Consumes Foundry frames; sends only the LEDs that changed."""
+
+    def __init__(self, pico, mapping, min_level=DEFAULT_MIN):
+        self.pico = pico
+        self.map = mapping
+        self.min_level = min_level
+        self.last = {}   # (q, idx) -> (r, g, b)
+
+    def on_message(self, data):
+        t = data.get("type")
+        if t == "led_state":
+            self._render(data.get("leds", {}))
+        elif t == "clear":
+            self.pico.clear()
+            self.last = {}
+        elif t == "test":
+            self._test(data.get("pattern", "panels"))
+
+    def _render(self, leds):
+        new = {}
+        for key, rgb in leds.items():
+            try:
+                r, c = (int(x) for x in key.split(","))
+                cr, cg, cb = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+            except (ValueError, IndexError, TypeError):
                 continue
+            if max(cr, cg, cb) < self.min_level:
+                continue  # treat very-dim cells as off (keeps the show sparse)
+            for (q, idx) in self.map.cell_to_leds(r, c):
+                new[(q, idx)] = (cr, cg, cb)
 
-            mtype = msg.get("type")
+        changed = 0
+        for k in set(new) | set(self.last):
+            val = new.get(k, (0, 0, 0))
+            if self.last.get(k, (0, 0, 0)) != val:
+                q, idx = k
+                self.pico.set_led(q, idx, *val)
+                changed += 1
+        self.last = new
+        if changed:
+            print(f"[bridge] frame: {len(new)} lit, {changed} changed")
 
-            if mtype == "led_state":
-                apply_led_state(msg.get("leds", {}))
-            elif mtype == "clear":
-                clear_all()
-            elif mtype == "test":
-                run_test(msg.get("pattern", "rainbow"))
-            elif mtype == "ping":
-                await websocket.send(json.dumps({"type": "pong"}))
-
-    except websockets.ConnectionClosed:
-        print("Foundry disconnected.")
-
-
-def run_test(pattern):
-    """Diagnostic patterns to verify wiring."""
-    if pattern == "rainbow":
-        # Light every cell with a hue based on position
-        leds = {}
-        for row in range(GRID_SIZE):
-            for col in range(GRID_SIZE):
-                hue = (row + col) / (GRID_SIZE * 2)
-                r, g, b = hsv_to_rgb(hue, 1.0, 0.5)
-                leds[f"{row},{col}"] = [r, g, b]
-        apply_led_state(leds)
-    elif pattern == "panels":
-        # Each panel a different color to verify row bands
-        colors = {0: (255, 0, 0), 1: (0, 255, 0), 2: (0, 0, 255), 3: (255, 255, 0)}
-        leds = {}
-        for panel_id, rows in PANEL_ROWS.items():
-            r, g, b = colors[panel_id]
-            for row in rows:
-                for col in range(GRID_SIZE):
-                    leds[f"{row},{col}"] = [r, g, b]
-        apply_led_state(leds)
-    elif pattern == "off":
-        clear_all()
+    def _test(self, pattern):
+        colors = [(255, 40, 40), (40, 255, 80), (40, 120, 255), (255, 200, 0), (200, 60, 220)]
+        for q in range(NUM_QUADRANTS):
+            self.pico.fill(q, *colors[q % len(colors)])
+        self.last = {}
 
 
-def hsv_to_rgb(h, s, v):
-    import colorsys
-    r, g, b = colorsys.hsv_to_rgb(h, s, v)
-    return int(r * 255), int(g * 255), int(b * 255)
+# ============================================================ WEBSOCKET SERVER
+async def run_server(renderer, host, port):
+    if websockets is None:
+        print("[bridge] 'websockets' not installed. Run: pip install websockets pyserial")
+        return
 
+    async def handler(websocket, *_):
+        print("[bridge] Foundry connected")
+        try:
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                except json.JSONDecodeError:
+                    continue
+                renderer.on_message(data)
+        except Exception as e:
+            print(f"[bridge] connection error: {e}")
+        finally:
+            print("[bridge] Foundry disconnected")
 
-async def main():
-    connect_all()
-    print(f"\nLED Bridge running on ws://{WS_HOST}:{WS_PORT}")
-    print("Waiting for Foundry to connect...\n")
-    async with websockets.serve(handler, WS_HOST, WS_PORT):
+    print(f"[bridge] listening for Foundry on ws://{host}:{port}")
+    async with websockets.serve(handler, host, port):
         await asyncio.Future()  # run forever
 
 
-if __name__ == "__main__":
+# ============================================================ CALIBRATION
+def calibrate(pico, mapping):
+    """Interactive REPL to verify/adjust the tile->LED mapping on real hardware."""
+    paint = [255, 255, 255]
+    print("""
+ CALIBRATION — type a command, Enter:
+   cell R C        light tile (row R, col C) using the current mapping
+   raw Q IDX       light raw LED IDX on quadrant Q (ignores the mapping)
+   col C           light grid column C (all 25 rows)  [a vertical line]
+   row R           light grid row R   (all 25 cols)   [a horizontal line]
+   quad Q          fill quadrant Q
+   walk Q [sec]    step one LED through quadrant Q's strip 0..192 (maps order)
+   color R G B     set the paint color (default white)
+   clear           all off
+   info            show mapping totals + knobs
+   quit
+""")
+    while True:
+        try:
+            line = input("calib> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not line:
+            continue
+        p = line.split()
+        cmd = p[0].lower()
+        try:
+            if cmd in ("quit", "q", "exit"):
+                break
+            elif cmd == "clear":
+                pico.clear()
+            elif cmd == "info":
+                print(f"  built {mapping.total} LEDs/quadrant (expected {LEDS_PER_QUADRANT})")
+                print(f"  COLUMN_ORDER={COLUMN_ORDER}  FIRST_RUN_UP={FIRST_RUN_UP}")
+                print(f"  LED_PER_TILE sum={sum(LED_PER_TILE)}")
+            elif cmd == "color":
+                paint = [int(p[1]), int(p[2]), int(p[3])]
+                print(f"  paint = {paint}")
+            elif cmd == "cell":
+                pico.clear()
+                r, c = int(p[1]), int(p[2])
+                leds = mapping.cell_to_leds(r, c)
+                for (q, idx) in leds:
+                    pico.set_led(q, idx, *paint)
+                print(f"  cell ({r},{c}) -> {leds}")
+            elif cmd == "raw":
+                pico.clear()
+                pico.set_led(int(p[1]), int(p[2]), *paint)
+            elif cmd == "col":
+                pico.clear()
+                c = int(p[1])
+                for r in range(GRID):
+                    for (q, idx) in mapping.cell_to_leds(r, c):
+                        pico.set_led(q, idx, *paint)
+            elif cmd == "row":
+                pico.clear()
+                r = int(p[1])
+                for c in range(GRID):
+                    for (q, idx) in mapping.cell_to_leds(r, c):
+                        pico.set_led(q, idx, *paint)
+            elif cmd == "quad":
+                pico.fill(int(p[1]), *paint)
+            elif cmd == "walk":
+                q = int(p[1])
+                delay = float(p[2]) if len(p) > 2 else 0.15
+                for idx in range(LEDS_PER_QUADRANT):
+                    pico.clear()
+                    pico.set_led(q, idx, *paint)
+                    print(f"   q{q} led {idx}")
+                    time.sleep(delay)
+            else:
+                print("  ? unknown command")
+        except (IndexError, ValueError):
+            print("  ? bad arguments")
+    pico.clear()
+    print("calibration done.")
+
+
+# ============================================================ MAIN
+def main():
+    ap = argparse.ArgumentParser(description="La Dolce Notte LED bridge")
+    ap.add_argument("--port", help="Pico serial port, e.g. COM5 (omit for dry-run)")
+    ap.add_argument("--baud", type=int, default=SERIAL_BAUD)
+    ap.add_argument("--host", default=WS_HOST)
+    ap.add_argument("--ws-port", type=int, default=WS_PORT)
+    ap.add_argument("--brightness", type=float, default=DEFAULT_BRIGHTNESS,
+                    help="extra brightness scale 0..1 (default 1.0)")
+    ap.add_argument("--min", type=int, default=DEFAULT_MIN,
+                    help="skip cells dimmer than this (e.g. 25 to hide ambient)")
+    ap.add_argument("--list-ports", action="store_true", help="list serial ports and exit")
+    ap.add_argument("--calibrate", action="store_true", help="interactive mapping/calibration")
+    ap.add_argument("--verbose", action="store_true", help="log commands in dry-run")
+    args = ap.parse_args()
+
+    if args.list_ports:
+        if serial is None:
+            print("pyserial not installed. Run: pip install pyserial")
+            return
+        ports = list(serial.tools.list_ports.comports())
+        if not ports:
+            print("No serial ports found.")
+        for p in ports:
+            print(f"  {p.device}  -  {p.description}")
+        return
+
+    mapping = MazeMapping()
+    if mapping.total != LEDS_PER_QUADRANT:
+        print(f"[bridge] NOTE: mapping builds {mapping.total} LEDs/quadrant but the "
+              f"strips have {LEDS_PER_QUADRANT}. Confirm the LED_PER_TILE pattern with "
+              f"--calibrate (the {LEDS_PER_QUADRANT - mapping.total} extra LEDs need placing).")
+
+    pico = Pico(args.port, args.baud, args.brightness, args.verbose)
+
     try:
-        asyncio.run(main())
+        if args.calibrate:
+            calibrate(pico, mapping)
+        else:
+            renderer = Renderer(pico, mapping, args.min)
+            asyncio.run(run_server(renderer, args.host, args.ws_port))
     except KeyboardInterrupt:
-        print("\nShutting down, clearing LEDs...")
-        clear_all()
+        print("\n[bridge] shutting down")
+    finally:
+        pico.close()
+
+
+if __name__ == "__main__":
+    main()

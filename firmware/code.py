@@ -1,125 +1,89 @@
-# La Dolce Notte — Pico Panel Firmware (CircuitPython)
+# La Dolce Notte - LED maze SERIAL LISTENER firmware
+# Waits for commands over USB serial and lights LEDs on demand.
+# Board: Raspberry Pi Pico 2 (non-W firmware).
 #
-# Flash this to each of the 4 Picos. Set PANEL_ID (0-3) per board.
-# Listens on USB serial for LED commands and drives the WS2812B chain.
+# Pins: skip GP1 (dead on this board). Q1=GP0, Q2=GP2 for now;
+#       add GP3, GP4, GP5 as you wire the remaining quadrants.
 #
-# Hardware: Raspberry Pi Pico 2, WS2812B data on GP1.
-# CircuitPython 10.x + neopixel + adafruit_pixelbuf libraries.
+# COMMAND FORMAT (type in the Thonny Shell, press Enter):
+#   q,idx,r,g,b     -> set one LED.  e.g.  0,47,80,0,0   = quad 0, LED 47, red
+#   fill,q,r,g,b    -> fill a whole quadrant.  e.g.  fill,1,0,80,0  = quad 1 green
+#   clear           -> all LEDs off
+#   all,r,g,b       -> fill every quadrant the same color
 #
-# Serial protocol (binary frames):
-#   0xFF 0xFF <count:uint16 LE> [<idx:uint16 LE> <R> <G> <B>] ... 0xFE
-#   count=0 means "show" (latch the buffer to the LEDs)
+#   q is the quadrant INDEX: 0 = first quadrant, 1 = second, etc.
+#   r,g,b are 0-255.
 
 import board
 import neopixel
 import supervisor
-import sys
-import usb_cdc
+import time
 
-# ============ PER-PANEL CONFIG ============
-# CHANGE THIS for each Pico before flashing!
-PANEL_ID = 0  # 0, 1, 2, or 3
+NUM_LEDS = 193
+BRIGHTNESS = 0.3
 
-# LED counts per panel (from CONFIG.md)
-PANEL_LED_COUNTS = {
-    0: 266,  # rows 0-6
-    1: 228,  # rows 7-12
-    2: 228,  # rows 13-18
-    3: 228,  # rows 19-24
-}
+# Quadrant index -> data pin. Add more as you wire them. Skips dead GP1.
+PINS = [board.GP0, board.GP2]   # later: board.GP3, board.GP4, board.GP5
 
-NUM_LEDS = PANEL_LED_COUNTS[PANEL_ID]
-DATA_PIN = board.GP1  # GP0 was non-functional in POC
+strips = [
+    neopixel.NeoPixel(p, NUM_LEDS, brightness=BRIGHTNESS, auto_write=False)
+    for p in PINS
+]
 
-# ============ SETUP ============
-pixels = neopixel.NeoPixel(
-    DATA_PIN,
-    NUM_LEDS,
-    brightness=1.0,      # brightness baked into colors by the bridge
-    auto_write=False,
-    pixel_order=neopixel.GRB,
-)
+def clear_all():
+    for s in strips:
+        s.fill((0, 0, 0))
+        s.show()
 
-# Use the data serial channel (not the REPL console)
-serial = usb_cdc.data if usb_cdc.data else usb_cdc.console
+def handle(line):
+    line = line.strip()
+    if not line:
+        return
+    parts = line.split(",")
+    cmd = parts[0]
 
-# Frame parser state
-STATE_WAIT_H1 = 0
-STATE_WAIT_H2 = 1
-STATE_COUNT_LO = 2
-STATE_COUNT_HI = 3
-STATE_DATA = 4
+    try:
+        if cmd == "clear":
+            clear_all()
+            print("OK clear")
 
-state = STATE_WAIT_H1
-count = 0
-data_buf = bytearray()
-data_needed = 0
+        elif cmd == "all":
+            r, g, b = int(parts[1]), int(parts[2]), int(parts[3])
+            for s in strips:
+                s.fill((r, g, b)); s.show()
+            print("OK all", r, g, b)
 
+        elif cmd == "fill":
+            q = int(parts[1])
+            r, g, b = int(parts[2]), int(parts[3]), int(parts[4])
+            strips[q].fill((r, g, b)); strips[q].show()
+            print("OK fill q" + str(q), r, g, b)
 
-def startup_blink():
-    """Flash the panel ID so you know which board is which."""
-    for _ in range(PANEL_ID + 1):
-        pixels.fill((0, 20, 0))
-        pixels.show()
-        _delay(150)
-        pixels.fill((0, 0, 0))
-        pixels.show()
-        _delay(150)
+        else:
+            # default: "q,idx,r,g,b" single-LED form
+            q = int(parts[0])
+            idx = int(parts[1])
+            r, g, b = int(parts[2]), int(parts[3]), int(parts[4])
+            strips[q][idx] = (r, g, b)
+            strips[q].show()
+            print("OK q" + str(q), "led", idx, "=", r, g, b)
 
+    except (IndexError, ValueError):
+        print("BAD COMMAND:", line)
+    except Exception as e:
+        print("ERROR:", e)
 
-def _delay(ms):
-    import time
-    time.sleep(ms / 1000)
+# Startup: brief flash so you know the firmware is live, then clear.
+for s in strips:
+    s.fill((20, 0, 0)); s.show()
+time.sleep(0.5)
+clear_all()
+print("Serial listener ready. Type a command and press Enter.")
+print("Examples:  0,47,80,0,0   |   fill,1,0,80,0   |   all,30,0,0   |   clear")
 
-
-def apply_frame(buf):
-    """Apply a data frame: series of (idx, r, g, b) updates."""
-    i = 0
-    n = len(buf)
-    while i + 5 <= n:
-        idx = buf[i] | (buf[i + 1] << 8)
-        r = buf[i + 2]
-        g = buf[i + 3]
-        b = buf[i + 4]
-        if 0 <= idx < NUM_LEDS:
-            pixels[idx] = (r, g, b)
-        i += 5
-
-
-startup_blink()
-
-# ============ MAIN LOOP ============
+# Main loop: read a line whenever one is available.
 while True:
-    if serial.in_waiting > 0:
-        byte = serial.read(1)
-        if not byte:
-            continue
-        b = byte[0]
-
-        if state == STATE_WAIT_H1:
-            if b == 0xFF:
-                state = STATE_WAIT_H2
-        elif state == STATE_WAIT_H2:
-            if b == 0xFF:
-                state = STATE_COUNT_LO
-            else:
-                state = STATE_WAIT_H1
-        elif state == STATE_COUNT_LO:
-            count = b
-            state = STATE_COUNT_HI
-        elif state == STATE_COUNT_HI:
-            count |= (b << 8)
-            if count == 0:
-                # "show" command — latch buffer to LEDs
-                pixels.show()
-                state = STATE_WAIT_H1
-            else:
-                data_needed = count * 5
-                data_buf = bytearray()
-                state = STATE_DATA
-        elif state == STATE_DATA:
-            data_buf.append(b)
-            if len(data_buf) >= data_needed:
-                # Next byte should be footer 0xFE, but we apply now
-                apply_frame(data_buf)
-                state = STATE_WAIT_H1
+    if supervisor.runtime.serial_bytes_available:
+        line = input()
+        handle(line)
+    time.sleep(0.01)
