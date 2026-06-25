@@ -17,6 +17,7 @@
 import board
 import neopixel
 import supervisor
+import sys
 import time
 
 NUM_LEDS = 193
@@ -35,55 +36,78 @@ def clear_all():
         s.fill((0, 0, 0))
         s.show()
 
-def handle(line):
+def apply(line):
+    """Apply ONE command to the pixel buffers WITHOUT calling show().
+    Returns the quadrant index touched, -1 for every quadrant, or None on no-op.
+    (show() is batched in the main loop so a flood of commands stays fast.)"""
     line = line.strip()
     if not line:
-        return
+        return None
     parts = line.split(",")
     cmd = parts[0]
-
     try:
         if cmd == "clear":
-            clear_all()
-            print("OK clear")
-
+            for s in strips:
+                s.fill((0, 0, 0))
+            return -1
         elif cmd == "all":
             r, g, b = int(parts[1]), int(parts[2]), int(parts[3])
             for s in strips:
-                s.fill((r, g, b)); s.show()
-            print("OK all", r, g, b)
-
+                s.fill((r, g, b))
+            return -1
         elif cmd == "fill":
             q = int(parts[1])
             r, g, b = int(parts[2]), int(parts[3]), int(parts[4])
-            strips[q].fill((r, g, b)); strips[q].show()
-            print("OK fill q" + str(q), r, g, b)
-
+            strips[q].fill((r, g, b))
+            return q
         else:
             # default: "q,idx,r,g,b" single-LED form
             q = int(parts[0])
             idx = int(parts[1])
             r, g, b = int(parts[2]), int(parts[3]), int(parts[4])
             strips[q][idx] = (r, g, b)
-            strips[q].show()
-            print("OK q" + str(q), "led", idx, "=", r, g, b)
-
+            return q
     except (IndexError, ValueError):
-        print("BAD COMMAND:", line)
-    except Exception as e:
-        print("ERROR:", e)
+        return None
+    except Exception:
+        return None
 
 # Startup: brief flash so you know the firmware is live, then clear.
 for s in strips:
     s.fill((20, 0, 0)); s.show()
 time.sleep(0.5)
 clear_all()
-print("Serial listener ready. Type a command and press Enter.")
-print("Examples:  0,47,80,0,0   |   fill,1,0,80,0   |   all,30,0,0   |   clear")
+print("Serial listener ready (batched). q,idx,r,g,b | fill,q,r,g,b | all,r,g,b | clear")
 
-# Main loop: read a line whenever one is available.
+# Main loop: drain ALL buffered commands, apply them, then refresh each touched
+# strip ONCE. This keeps up with a full-frame flood from the bridge and stops the
+# serial buffer from overflowing.
+buf = ""
 while True:
-    if supervisor.runtime.serial_bytes_available:
-        line = input()
-        handle(line)
-    time.sleep(0.01)
+    n = supervisor.runtime.serial_bytes_available
+    if not n:
+        time.sleep(0.002)
+        continue
+    buf += sys.stdin.read(n)
+    dirty = set()
+    all_dirty = False
+    applied = 0
+    while "\n" in buf:
+        line, buf = buf.split("\n", 1)
+        q = apply(line)
+        if q is None:
+            continue
+        applied += 1
+        if q < 0:
+            all_dirty = True
+        else:
+            dirty.add(q)
+    if all_dirty:
+        for s in strips:
+            s.show()
+    else:
+        for q in dirty:
+            if 0 <= q < len(strips):
+                strips[q].show()
+    if applied:
+        print("OK", applied)   # one ack per batch (confirms the firmware is alive)

@@ -118,7 +118,7 @@ class Pico:
             try:
                 self.ser = serial.Serial(port, baud, timeout=0.05)
                 time.sleep(2.0)  # let the board reset/boot
-                self._drain()
+                self.drain()
                 print(f"[bridge] connected to Pico on {port}")
             except Exception as e:
                 print(f"[bridge] could NOT open {port} ({e}); running dry (no LEDs).")
@@ -127,12 +127,23 @@ class Pico:
             why = "no --port given" if not port else "pyserial not installed"
             print(f"[bridge] {why}; running dry (no LEDs).")
 
-    def _drain(self):
+    def drain(self):
         if self.ser and self.ser.in_waiting:
             try:
                 self.ser.read(self.ser.in_waiting)
             except Exception:
                 pass
+
+    def read_response(self, wait=0.3):
+        """Read whatever the firmware echoed back, to confirm it's alive."""
+        if self.ser is None:
+            return ""
+        time.sleep(wait)
+        try:
+            n = self.ser.in_waiting
+            return self.ser.read(n).decode(errors="replace").strip() if n else ""
+        except Exception as e:
+            return f"(read error: {e})"
 
     def _send(self, line):
         self.tx += 1
@@ -142,9 +153,19 @@ class Pico:
             return
         try:
             self.ser.write((line + "\n").encode())
-            self._drain()
         except Exception as e:
             print(f"[bridge] serial write failed ({e})")
+
+    def pace(self):
+        """Flush + brief pause so the Pico can drain its receive buffer between
+        chunks of a big frame (prevents overflow / wedging on the first frame)."""
+        if self.ser is None:
+            return
+        try:
+            self.ser.flush()
+        except Exception:
+            pass
+        time.sleep(0.006)
 
     def _scale(self, v):
         return max(0, min(255, int(v * self.brightness)))
@@ -191,6 +212,7 @@ class Renderer:
             self._test(data.get("pattern", "panels"))
 
     def _render(self, leds):
+        self.pico.drain()  # discard the firmware's "OK" echoes so the buffer stays clear
         new = {}
         for key, rgb in leds.items():
             try:
@@ -210,6 +232,8 @@ class Renderer:
                 q, idx = k
                 self.pico.set_led(q, idx, *val)
                 changed += 1
+                if changed % 48 == 0:
+                    self.pico.pace()  # let the Pico drain between chunks
         self.last = new
         if changed:
             print(f"[bridge] frame: {len(new)} lit, {changed} changed")
@@ -318,6 +342,15 @@ def calibrate(pico, mapping):
                     time.sleep(delay)
             else:
                 print("  ? unknown command")
+            # Show what the firmware echoed/replied — only for commands that actually
+            # send something to the Pico.
+            if cmd in ("clear", "cell", "raw", "col", "row", "quad", "walk"):
+                resp = pico.read_response()
+                if resp:
+                    print("  pico:", resp.replace("\r", " ").replace("\n", " | "))
+                else:
+                    print("  pico: (no reply — if the LEDs didn't light either, the "
+                          "listener firmware isn't running on this port.)")
         except (IndexError, ValueError):
             print("  ? bad arguments")
     pico.clear()
