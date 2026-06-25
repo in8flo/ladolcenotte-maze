@@ -52,15 +52,20 @@ NUM_QUADRANTS = 5
 QUAD_COLS = 5            # grid columns per quadrant (5 cols x 5 quads = 25)
 LEDS_PER_QUADRANT = 193  # empirical, per BRIDGE-HANDOFF
 
-# ---- MAPPING KNOBS (confirm these on hardware with --calibrate) ----
-# Per-tile LED counts ALONG ONE vertical column run (25 entries, strip order).
-# From CONFIG.md's 2-1-2 pattern; sums to 38 -> 5 runs = 190 (vs 193 measured).
-LED_PER_TILE = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]
-# Order the strip visits the 5 local columns of a quadrant (0=leftmost grid col
-# of the quadrant). [0,1,2,3,4] = strip starts at the quadrant's left column.
+# ---- MAPPING KNOBS (confirm on hardware with --calibrate -> `walk 0`) ----
+# All 5 quadrants are wired identically: 5 local columns, a vertical serpentine.
+# LEDs are spaced evenly down each 25-tile column, so a tile gets 1 or 2 LEDs and
+# an LED between two tiles lands in whichever tile its center falls in.
+#
+# COLUMN_ORDER: the local columns (0 = the quadrant's left grid column) in the
+#   order the strip physically visits them.
 COLUMN_ORDER = [0, 1, 2, 3, 4]
-# Direction of the FIRST run: True = bottom(row 24)->top(row 0); then alternates.
-FIRST_RUN_UP = True
+# COLUMN_LEDS: how many LEDs are in each run, in COLUMN_ORDER order. Must sum to
+#   LEDS_PER_QUADRANT (193). Refine from the `walk 0` U-turn points.
+COLUMN_LEDS = [39, 39, 39, 38, 38]
+# FIRST_RUN_TOP_TO_BOTTOM: does the first column run go row 0 (top) -> row 24
+#   (bottom)? Subsequent runs alternate. (Flipped from the first build per Mike.)
+FIRST_RUN_TOP_TO_BOTTOM = True
 # Pin order is implied by the firmware's PINS list (quad 0 = GP0, quad 1 = GP2...).
 
 # ---- Show tuning ----
@@ -80,14 +85,18 @@ class MazeMapping:
         self._build()
 
     def _build(self):
+        # Walk the strip run by run; place each LED in the tile its center sits in.
         idx = 0
         for run_i, local_col in enumerate(COLUMN_ORDER):
-            up = FIRST_RUN_UP if (run_i % 2 == 0) else (not FIRST_RUN_UP)
-            for pos in range(GRID):                 # position along the strip in this run
-                grid_row = (GRID - 1 - pos) if up else pos
-                count = LED_PER_TILE[pos] if pos < len(LED_PER_TILE) else 1
-                self.quad_map[(local_col, grid_row)] = [idx + k for k in range(count)]
-                idx += count
+            n = COLUMN_LEDS[run_i] if run_i < len(COLUMN_LEDS) else 0
+            top_to_bottom = FIRST_RUN_TOP_TO_BOTTOM if (run_i % 2 == 0) else (not FIRST_RUN_TOP_TO_BOTTOM)
+            for pos in range(n):                       # strip position within this run
+                row_from_top = int((pos + 0.5) / n * GRID)   # LED center -> tile (0..24)
+                if row_from_top >= GRID:
+                    row_from_top = GRID - 1
+                grid_row = row_from_top if top_to_bottom else (GRID - 1 - row_from_top)
+                self.quad_map.setdefault((local_col, grid_row), []).append(idx)
+                idx += 1
         self.total = idx
 
     def cell_to_leds(self, row, col):
@@ -303,8 +312,8 @@ def calibrate(pico, mapping):
                 pico.clear()
             elif cmd == "info":
                 print(f"  built {mapping.total} LEDs/quadrant (expected {LEDS_PER_QUADRANT})")
-                print(f"  COLUMN_ORDER={COLUMN_ORDER}  FIRST_RUN_UP={FIRST_RUN_UP}")
-                print(f"  LED_PER_TILE sum={sum(LED_PER_TILE)}")
+                print(f"  COLUMN_ORDER={COLUMN_ORDER}  COLUMN_LEDS={COLUMN_LEDS} (sum {sum(COLUMN_LEDS)})")
+                print(f"  FIRST_RUN_TOP_TO_BOTTOM={FIRST_RUN_TOP_TO_BOTTOM}")
             elif cmd == "color":
                 paint = [int(p[1]), int(p[2]), int(p[3])]
                 print(f"  paint = {paint}")
