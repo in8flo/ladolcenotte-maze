@@ -53,21 +53,35 @@ NUM_QUADRANTS = 5
 QUAD_COLS = 5            # grid columns per quadrant (5 cols x 5 quads = 25)
 LEDS_PER_QUADRANT = 193  # empirical, per BRIDGE-HANDOFF
 
-# ---- MAPPING KNOBS (confirm on hardware with --calibrate -> `walk 0`) ----
-# All 5 quadrants are wired identically: 5 local columns, a vertical serpentine.
-# LEDs are spaced evenly down each 25-tile column, so a tile gets 1 or 2 LEDs and
-# an LED between two tiles lands in whichever tile its center falls in.
-#
-# COLUMN_ORDER: the local columns (0 = the quadrant's left grid column) in the
-#   order the strip physically visits them.
-COLUMN_ORDER = [0, 1, 2, 3, 4]
-# COLUMN_LEDS: how many LEDs are in each run, in COLUMN_ORDER order. Must sum to
-#   LEDS_PER_QUADRANT (193). Refine from the `walk 0` U-turn points.
-COLUMN_LEDS = [38, 39, 39, 39, 38]
-# FIRST_RUN_TOP_TO_BOTTOM: does the first column run go row 0 (top) -> row 24
-#   (bottom)? Subsequent runs alternate. (Flipped from the first build per Mike.)
-FIRST_RUN_TOP_TO_BOTTOM = True
-# Pin order is implied by the firmware's PINS list (quad 0 = GP0, quad 1 = GP2...).
+# ---- EXPLICIT TILE -> LED MAP (hand-measured on the real strips, June 2026) ----
+# Mike walked quadrant 0 LED by LED. All 5 quadrants are wired identically, so this
+# one map drives every quadrant. Keyed by local column letter (A = the quadrant's
+# leftmost grid column .. E = rightmost) and TILE LABEL (1 = bottom row, 25 = top
+# row). Each tile lists the LED index(es) physically inside it. Any LED index NOT
+# listed sits between two tiles (a boundary / "dead" LED) and is left dark on purpose.
+EXPLICIT_QUAD = {
+    "A": {25: [0], 24: [1, 2], 23: [3], 22: [4, 5], 21: [6], 20: [7, 8], 19: [9],
+          18: [10, 11], 17: [12], 16: [13, 14], 15: [15], 14: [17], 13: [18], 12: [20],
+          11: [21], 10: [23], 9: [24], 8: [26], 7: [27], 6: [29], 5: [30, 31], 4: [32],
+          3: [33, 34], 2: [35], 1: [36, 37]},
+    "B": {1: [38, 39], 2: [40], 3: [41, 42], 4: [43], 5: [44, 45], 6: [46], 7: [48],
+          8: [49], 9: [51], 10: [52], 11: [54], 12: [55], 13: [57], 14: [58], 15: [60],
+          16: [61], 17: [63], 18: [64], 19: [66], 20: [67, 68], 21: [69], 22: [70, 71],
+          23: [72], 24: [73, 74], 25: [75, 76]},
+    "C": {25: [77, 78], 24: [79], 23: [80, 81], 22: [82], 21: [83, 84], 20: [85],
+          19: [87], 18: [88], 17: [90], 16: [91], 15: [93], 14: [94], 13: [96], 12: [97],
+          11: [99], 10: [100], 9: [102], 8: [103], 7: [105], 6: [106, 107], 5: [108],
+          4: [109, 110], 3: [111], 2: [112, 113], 1: [114, 115]},
+    "D": {1: [116, 117], 2: [118, 119], 3: [120], 4: [121, 122], 5: [123], 6: [124, 125],
+          7: [126], 8: [127, 128], 9: [129], 10: [131], 11: [132], 12: [134], 13: [135],
+          14: [137], 15: [138], 16: [140], 17: [141], 18: [143], 19: [144, 145],
+          20: [146], 21: [147, 148], 22: [149], 23: [150, 151], 24: [152], 25: [153, 154]},
+    "E": {25: [155, 156], 24: [157], 23: [158, 159], 22: [160], 21: [161, 162], 20: [163],
+          19: [164, 165], 18: [166], 17: [167, 168], 16: [169], 15: [171], 14: [172],
+          13: [174], 12: [175], 11: [177], 10: [178], 9: [180], 8: [181], 7: [183],
+          6: [184, 185], 5: [186], 4: [187, 188], 3: [189], 2: [190, 191], 1: [192]},
+}
+COLUMN_LETTERS = ["A", "B", "C", "D", "E"]
 
 # ---- Show tuning ----
 DEFAULT_BRIGHTNESS = 1.0   # extra scale on top of the colors (firmware also dims)
@@ -112,19 +126,14 @@ class MazeMapping:
         self._build()
 
     def _build(self):
-        # Walk the strip run by run; place each LED in the tile its center sits in.
-        idx = 0
-        for run_i, local_col in enumerate(COLUMN_ORDER):
-            n = COLUMN_LEDS[run_i] if run_i < len(COLUMN_LEDS) else 0
-            top_to_bottom = FIRST_RUN_TOP_TO_BOTTOM if (run_i % 2 == 0) else (not FIRST_RUN_TOP_TO_BOTTOM)
-            for pos in range(n):                       # strip position within this run
-                row_from_top = int((pos + 0.5) / n * GRID)   # LED center -> tile (0..24)
-                if row_from_top >= GRID:
-                    row_from_top = GRID - 1
-                grid_row = row_from_top if top_to_bottom else (GRID - 1 - row_from_top)
-                self.quad_map.setdefault((local_col, grid_row), []).append(idx)
-                idx += 1
-        self.total = idx
+        # Build (local_col, grid_row) -> [led] straight from the hand-measured map.
+        # grid_row 0 = top (tile label 25); grid_row 24 = bottom (tile label 1).
+        for letter, tiles in EXPLICIT_QUAD.items():
+            local_col = COLUMN_LETTERS.index(letter)
+            for tile_label, leds in tiles.items():
+                grid_row = GRID - tile_label   # 25 -> 0 (top), 1 -> 24 (bottom)
+                self.quad_map.setdefault((local_col, grid_row), []).extend(leds)
+                self.total += len(leds)
 
     def cell_to_leds(self, row, col):
         """-> list of (quadrant, led_index)."""
@@ -339,9 +348,9 @@ def calibrate(pico, mapping):
             elif cmd == "clear":
                 pico.clear()
             elif cmd == "info":
-                print(f"  built {mapping.total} LEDs/quadrant (expected {LEDS_PER_QUADRANT})")
-                print(f"  COLUMN_ORDER={COLUMN_ORDER}  COLUMN_LEDS={COLUMN_LEDS} (sum {sum(COLUMN_LEDS)})")
-                print(f"  FIRST_RUN_TOP_TO_BOTTOM={FIRST_RUN_TOP_TO_BOTTOM}")
+                dead = LEDS_PER_QUADRANT - mapping.total
+                print(f"  explicit map: {mapping.total} LEDs lit per quadrant, "
+                      f"{dead} dead (between-tile) of {LEDS_PER_QUADRANT}")
             elif cmd == "color":
                 paint = [int(p[1]), int(p[2]), int(p[3])]
                 print(f"  paint = {paint}")
@@ -448,10 +457,9 @@ def main():
                   "Plug the Pico in (or run --list-ports / pass --port COMx).")
 
     mapping = MazeMapping()
-    if mapping.total != LEDS_PER_QUADRANT:
-        print(f"[bridge] NOTE: mapping builds {mapping.total} LEDs/quadrant but the "
-              f"strips have {LEDS_PER_QUADRANT}. Confirm the LED_PER_TILE pattern with "
-              f"--calibrate (the {LEDS_PER_QUADRANT - mapping.total} extra LEDs need placing).")
+    dead = LEDS_PER_QUADRANT - mapping.total
+    print(f"[bridge] explicit LED map loaded: {mapping.total} lit / {dead} dead "
+          f"(between-tile) per quadrant.")
 
     pico = Pico(port, args.baud, args.brightness, args.verbose)
 
