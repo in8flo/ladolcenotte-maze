@@ -81,3 +81,13 @@ couple of `cell` mismatches and I'll lock the pattern in.
 - `--brightness 0.5` — extra dimming on top of the firmware's 0.3.
 - `--min 25` — skip cells dimmer than 25 (hides the faint corridor ambient so only
   players / horde / portals light up — keeps the show sparse and fast).
+
+## Green hedges
+
+By default the bridge lights all **interior** hedge tiles green (the transparent
+PET-G walls), reading the layout from `../maze-export.json`. The outer wall ring
+stays dark. Players, horde, and portals always draw on top of the green.
+
+- `--no-hedges` — turn the green underlay off.
+- `--hedge-color "0,160,40"` — change the green (default `0,130,0`).
+- `--maze PATH` — point at a different maze-export.json.

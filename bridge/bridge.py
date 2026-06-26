@@ -30,6 +30,7 @@ MAPPING knobs near the top of this file.
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 
@@ -87,6 +88,32 @@ COLUMN_LETTERS = ["A", "B", "C", "D", "E"]
 DEFAULT_BRIGHTNESS = 1.0   # extra scale on top of the colors (firmware also dims)
 DEFAULT_MIN = 0            # skip cells whose max channel < this (e.g. 25 hides the
                            # dim corridor ambient so only features/players/horde light)
+
+# Static green underlay for the interior hedges (the transparent PET-G walls). Dim
+# enough that players/horde still pop on top. Tunable with --hedge-color "r,g,b".
+DEFAULT_HEDGE_COLOR = (0, 130, 0)
+# maze-export.json lives at the repo root, one level up from this bridge/ folder.
+DEFAULT_MAZE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "maze-export.json")
+
+
+def load_hedge_cells(path):
+    """Return the set of (row, col) INTERIOR hedge tiles from maze-export.json — the
+    walls to light green. The outer wall ring (row/col 0 or 24) is excluded."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"[bridge] could not read maze layout ({e}); hedges will be dark.")
+        return set()
+    grid = data.get("grid", [])
+    n = len(grid)
+    cells = set()
+    for r in range(n):
+        row = grid[r]
+        for c in range(len(row)):
+            if row[c] == 0 and 0 < r < n - 1 and 0 < c < len(row) - 1:
+                cells.add((r, c))
+    return cells
 
 # Raspberry Pi USB vendor ID — the Pico / CircuitPython board presents this.
 PICO_VID = 0x2E8A
@@ -238,27 +265,50 @@ class Pico:
 
 # ============================================================ RENDERER
 class Renderer:
-    """Consumes Foundry frames; sends only the LEDs that changed."""
+    """Consumes Foundry frames; sends only the LEDs that changed. A static `base`
+    underlay (the green interior hedges) sits beneath every frame and is only
+    overwritten where Foundry lights a tile (players, horde, portals...)."""
 
-    def __init__(self, pico, mapping, min_level=DEFAULT_MIN):
+    def __init__(self, pico, mapping, min_level=DEFAULT_MIN, base=None):
         self.pico = pico
         self.map = mapping
         self.min_level = min_level
-        self.last = {}   # (q, idx) -> (r, g, b)
+        self.base = base or {}   # (q, idx) -> (r, g, b) persistent underlay (hedges)
+        self.last = {}           # (q, idx) -> (r, g, b) what's physically lit now
+
+    def prime(self):
+        """Light the static underlay (hedges) once, before any Foundry frame."""
+        if self.base:
+            self._apply_target(dict(self.base))
+            print(f"[bridge] hedge underlay primed: {len(self.base)} LEDs green")
+
+    def _apply_target(self, target):
+        """Diff `target` against what's lit and send only the changes. The 'off'
+        state for any LED is its base color (green for hedges, black otherwise)."""
+        self.pico.drain()  # discard the firmware's "OK" echoes so the buffer stays clear
+        changed = 0
+        for k in set(target) | set(self.last):
+            val = target.get(k, (0, 0, 0))
+            if self.last.get(k, (0, 0, 0)) != val:
+                q, idx = k
+                self.pico.set_led(q, idx, *val)
+                changed += 1
+                if changed % 48 == 0:
+                    self.pico.pace()  # let the Pico drain between chunks
+        self.last = target
+        return changed
 
     def on_message(self, data):
         t = data.get("type")
         if t == "led_state":
             self._render(data.get("leds", {}))
         elif t == "clear":
-            self.pico.clear()
-            self.last = {}
+            self._apply_target(dict(self.base))  # revert to the hedge underlay, not black
         elif t == "test":
             self._test(data.get("pattern", "panels"))
 
     def _render(self, leds):
-        self.pico.drain()  # discard the firmware's "OK" echoes so the buffer stays clear
-        new = {}
+        target = dict(self.base)  # start every frame from the green hedge underlay
         for key, rgb in leds.items():
             try:
                 r, c = (int(x) for x in key.split(","))
@@ -268,20 +318,11 @@ class Renderer:
             if max(cr, cg, cb) < self.min_level:
                 continue  # treat very-dim cells as off (keeps the show sparse)
             for (q, idx) in self.map.cell_to_leds(r, c):
-                new[(q, idx)] = (cr, cg, cb)
+                target[(q, idx)] = (cr, cg, cb)  # Foundry color overrides the underlay
 
-        changed = 0
-        for k in set(new) | set(self.last):
-            val = new.get(k, (0, 0, 0))
-            if self.last.get(k, (0, 0, 0)) != val:
-                q, idx = k
-                self.pico.set_led(q, idx, *val)
-                changed += 1
-                if changed % 48 == 0:
-                    self.pico.pace()  # let the Pico drain between chunks
-        self.last = new
+        changed = self._apply_target(target)
         if changed:
-            print(f"[bridge] frame: {len(new)} lit, {changed} changed")
+            print(f"[bridge] frame: {len(target)} lit, {changed} changed")
 
     def _test(self, pattern):
         colors = [(255, 40, 40), (40, 255, 80), (40, 120, 255), (255, 200, 0), (200, 60, 220)]
@@ -429,6 +470,10 @@ def main():
     ap.add_argument("--list-ports", action="store_true", help="list serial ports and exit")
     ap.add_argument("--calibrate", action="store_true", help="interactive mapping/calibration")
     ap.add_argument("--dry", action="store_true", help="force dry-run; skip Pico auto-detect")
+    ap.add_argument("--no-hedges", action="store_true", help="don't light the interior hedges green")
+    ap.add_argument("--hedge-color", default=None,
+                    help='green underlay color "r,g,b" (default "0,130,0")')
+    ap.add_argument("--maze", default=DEFAULT_MAZE_PATH, help="path to maze-export.json")
     ap.add_argument("--verbose", action="store_true", help="log commands in dry-run")
     args = ap.parse_args()
 
@@ -461,13 +506,33 @@ def main():
     print(f"[bridge] explicit LED map loaded: {mapping.total} lit / {dead} dead "
           f"(between-tile) per quadrant.")
 
+    # Build the static green underlay for the interior hedges.
+    base = {}
+    if not args.no_hedges:
+        if args.hedge_color:
+            try:
+                hedge_rgb = tuple(int(x) for x in args.hedge_color.split(","))
+                assert len(hedge_rgb) == 3
+            except (ValueError, AssertionError):
+                print(f"[bridge] bad --hedge-color {args.hedge_color!r}; using default.")
+                hedge_rgb = DEFAULT_HEDGE_COLOR
+        else:
+            hedge_rgb = DEFAULT_HEDGE_COLOR
+        hedge_cells = load_hedge_cells(args.maze)
+        for (r, c) in hedge_cells:
+            for (q, idx) in mapping.cell_to_leds(r, c):
+                base[(q, idx)] = hedge_rgb
+        print(f"[bridge] interior hedges: {len(hedge_cells)} tiles -> {len(base)} "
+              f"green LEDs (rgb {hedge_rgb}). Use --no-hedges to disable.")
+
     pico = Pico(port, args.baud, args.brightness, args.verbose)
 
     try:
         if args.calibrate:
             calibrate(pico, mapping)
         else:
-            renderer = Renderer(pico, mapping, args.min)
+            renderer = Renderer(pico, mapping, args.min, base)
+            renderer.prime()  # light the hedges immediately, before Foundry connects
             asyncio.run(run_server(renderer, args.host, args.ws_port))
     except KeyboardInterrupt:
         print("\n[bridge] shutting down")
