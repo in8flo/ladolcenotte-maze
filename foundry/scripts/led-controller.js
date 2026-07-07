@@ -32,6 +32,12 @@ export class LedController {
     this.ws = null;
     this.connected = false;
     this.wsUrl = "ws://localhost:8765";
+    this.onStatusChange = null;    // main.js hooks the panel refresh here
+    this._reconnectTimer = null;   // pending auto-reconnect
+    this._watchdogTimer = null;    // liveness checker (dead-socket detector)
+    this._lastPong = 0;            // last time the bridge answered a ping
+    this._outage = false;          // true while auto-reconnecting (notify once)
+    this._closing = false;         // intentional disconnect — don't reconnect
 
     // Render state
     this.portalPhase = 0;        // for pulsing portal animation
@@ -63,37 +69,104 @@ export class LedController {
     this.render();
   }
 
-  // ---- Bridge connection (fully optional / non-blocking) ----
+  // ---- Bridge connection (self-healing) ----
+  // Vegas lesson: the link WILL drop mid-session (laptop power management, USB
+  // suspend, transient socket death). The module must (a) notice — including
+  // half-open sockets that never fire onclose — (b) tell the DM loudly, and
+  // (c) reconnect + resync on its own. Never require a manual F5 again.
   connect() {
     // The bridge is hardware-phase only. In overlay-only mode we never open a
     // socket, so a missing bridge can't error, hang, or block the game.
     if (!this.bridgeEnabled) return;
     if (typeof WebSocket === "undefined") return;
+    this._cancelReconnect();
+    this._closing = false;
     try {
       this.ws = new WebSocket(this.wsUrl);
       this.ws.onopen = () => {
         this.connected = true;
+        this._lastPong = Date.now();
         console.log("LED bridge connected");
-        ui.notifications?.info("LED bridge connected");
-        this.render();
+        ui.notifications?.info(this._outage
+          ? "LED bridge RECONNECTED — physical maze is live again"
+          : "LED bridge connected");
+        this._outage = false;
+        this.send({ type: "resync" }); // bridge wipes its diff cache → full repaint
+        this.render();                 // push the current full state immediately
+        this._startWatchdog();
+        this.onStatusChange?.();
       };
       this.ws.onclose = () => {
+        const wasConnected = this.connected;
         this.connected = false;
-        console.log("LED bridge disconnected");
+        this._stopWatchdog();
+        this.onStatusChange?.();
+        if (this._closing || !this.bridgeEnabled) return; // intentional shutdown
+        if (wasConnected && !this._outage) {
+          this._outage = true;
+          console.warn("LED bridge disconnected — auto-reconnecting every 3s");
+          ui.notifications?.warn("LED bridge DISCONNECTED — physical maze frozen. Auto-reconnecting…");
+        }
+        this._scheduleReconnect();
       };
       this.ws.onerror = (e) => {
-        // Expected during this phase — the bridge isn't running. Stay quiet.
+        // Expected while the bridge isn't running. Stay quiet; onclose retries.
         console.warn("LED bridge unavailable (overlay still works):", e?.message ?? e);
+      };
+      this.ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "pong") this._lastPong = Date.now();
+        } catch (_) { /* ignore malformed */ }
       };
     } catch (e) {
       console.warn("Could not connect to LED bridge (overlay still works):", e);
+      this._scheduleReconnect();
     }
   }
 
+  _scheduleReconnect() {
+    if (this._reconnectTimer || !this.bridgeEnabled || this._closing) return;
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      if (this.bridgeEnabled && !this.connected && !this._closing) this.connect();
+    }, 3000);
+  }
+
+  _cancelReconnect() {
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+  }
+
+  // Detects the failure mode that killed Vegas: a half-open socket that never
+  // fires onclose (laptop suspend), where frames vanish silently. Two signals:
+  // pings that stop coming back, and a send buffer that only grows.
+  _startWatchdog() {
+    this._stopWatchdog();
+    this._watchdogTimer = setInterval(() => {
+      if (!this.connected || !this.ws) return;
+      this.send({ type: "ping" });
+      const stalled = this.ws.bufferedAmount > 65536;
+      const silent = Date.now() - this._lastPong > 15000;
+      if (stalled || silent) {
+        console.warn(`LED bridge unresponsive (${stalled ? "send buffer stalled" : "no pong in 15s"}) — forcing reconnect`);
+        try { this.ws.close(); } catch (_) { /* onclose takes it from here */ }
+      }
+    }, 5000);
+  }
+
+  _stopWatchdog() {
+    if (this._watchdogTimer) { clearInterval(this._watchdogTimer); this._watchdogTimer = null; }
+  }
+
   disconnect() {
+    this._closing = true;
+    this._cancelReconnect();
+    this._stopWatchdog();
     try { this.ws?.close(); } catch (_) { /* ignore */ }
     this.ws = null;
     this.connected = false;
+    this._outage = false;
+    this.onStatusChange?.();
   }
 
   send(msg) {

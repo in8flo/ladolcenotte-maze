@@ -12,6 +12,32 @@
   margin: 10px 0;
 }
 
+.ldn-bridge-banner {
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.ldn-bridge-banner.ok {
+  background: #0c2a18;
+  color: #00e676;
+  border: 1px solid #00e67655;
+}
+
+.ldn-bridge-banner.down {
+  background: #3a0d0d;
+  color: #ff5252;
+  border: 1px solid #ff5252;
+  animation: ldn-bridge-pulse 1s ease-in-out infinite;
+}
+
+@keyframes ldn-bridge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
 .ldn-status {
   background: #1a1a2a;
   border-radius: 6px;

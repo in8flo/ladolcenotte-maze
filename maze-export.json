@@ -1,5 +1,5 @@
 {
-  "name": "La Dolce Notte — Act 2 Maze",
+  "name": "La Dolce Notte \u00e2\u20ac\u201d Act 2 Maze",
   "gridSize": 25,
   "indexing": "cells are [row, col], 0-indexed; row 0 = north (top), col 0 = west (left)",
   "legend": {
@@ -19,11 +19,11 @@
     "#": "wall / hedge",
     ".": "path",
     "E": "entry",
-    "S": "tent — Sal",
-    "N": "tent — Eleanor",
-    "V": "tent — Everly",
-    "L": "tent — Lavinia",
-    "R": "tent — Rupert",
+    "S": "tent \u00e2\u20ac\u201d Sal",
+    "N": "tent \u00e2\u20ac\u201d Eleanor",
+    "V": "tent \u00e2\u20ac\u201d Everly",
+    "L": "tent \u00e2\u20ac\u201d Lavinia",
+    "R": "tent \u00e2\u20ac\u201d Rupert",
     "O": "portal",
     "*": "sprite",
     "P": "prison"
@@ -669,7 +669,7 @@
       1,
       1,
       1,
-      0,
+      1,
       1,
       0,
       0,

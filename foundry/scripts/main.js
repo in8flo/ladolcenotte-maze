@@ -305,6 +305,7 @@ Hooks.once("ready", () => {
   led.overlay = overlay;
   led.outputMode = getSetting("outputMode", OUTPUT_MODE.OVERLAY_ONLY);
   led.wsUrl = getSetting("ledBridgeUrl", "ws://localhost:8765");
+  led.onStatusChange = () => refreshPanel(); // repaint the bridge indicator on connect/drop
   applyPlayerColors();
   led.connect();
 
@@ -1198,6 +1199,9 @@ function buildPanelHTML(d) {
 
   return `
     <div class="ldn-panel">
+      ${d.bridgeOn ? `<div class="ldn-bridge-banner ${d.bridgeConnected ? 'ok' : 'down'}">
+        ${d.bridgeConnected ? '🟢 LED bridge connected — physical maze live' : '🔴 LED BRIDGE DISCONNECTED — maze frozen (auto-reconnecting…)'}
+      </div>` : ''}
       <div class="ldn-status">
         <div class="ldn-status-row"><span>Horde:</span>
           <strong class="${d.active ? 'active' : 'inactive'}">${d.active ? 'UNLEASHED' : 'dormant'}</strong></div>

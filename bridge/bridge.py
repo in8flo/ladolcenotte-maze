@@ -118,6 +118,22 @@ def load_hedge_cells(path):
 # Raspberry Pi USB vendor ID — the Pico / CircuitPython board presents this.
 PICO_VID = 0x2E8A
 
+# Timestamped file log next to this script — Vegas lesson: console windows get
+# closed during recovery, destroying the evidence. Lifecycle events, errors, and
+# heartbeats go to the file; per-frame spam stays console-only.
+LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge-log.txt")
+
+
+def log(msg, file_only=False):
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    if not file_only:
+        print(msg)
+    try:
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"[{stamp}] {msg}\n")
+    except Exception:
+        pass  # logging must never take the bridge down
+
 
 def autodetect_port():
     """Find the Pico's serial port with no hand-typed COM number (handles a
@@ -181,23 +197,57 @@ class MazeMapping:
 class Pico:
     """Thin wrapper over the serial-listener firmware. Graceful when absent."""
 
-    def __init__(self, port, baud=SERIAL_BAUD, brightness=DEFAULT_BRIGHTNESS, verbose=False):
+    def __init__(self, port, baud=SERIAL_BAUD, brightness=DEFAULT_BRIGHTNESS, verbose=False,
+                 allow_reopen=True):
         self.brightness = brightness
         self.verbose = verbose
         self.ser = None
         self.tx = 0
+        self.port = port
+        self.baud = baud
+        self.allow_reopen = allow_reopen and serial is not None
+        self._reopen_at = 0.0
         if port and serial is not None:
             try:
                 self.ser = serial.Serial(port, baud, timeout=0.05)
                 time.sleep(2.0)  # let the board reset/boot
                 self.drain()
-                print(f"[bridge] connected to Pico on {port}")
+                log(f"[bridge] connected to Pico on {port}")
             except Exception as e:
-                print(f"[bridge] could NOT open {port} ({e}); running dry (no LEDs).")
+                log(f"[bridge] could NOT open {port} ({e}); running dry (no LEDs).")
                 self.ser = None
         else:
             why = "no --port given" if not port else "pyserial not installed"
-            print(f"[bridge] {why}; running dry (no LEDs).")
+            log(f"[bridge] {why}; running dry (no LEDs).")
+
+    def ensure_open(self):
+        """Try to (re)open the serial link if it's down — covers USB suspend, a
+        replugged Pico (possibly on a NEW COM number), or plugging it in after the
+        bridge started. Attempts at most every 5s. Returns True only when a fresh
+        connection was just established (caller should force a full repaint)."""
+        if self.ser is not None or not self.allow_reopen:
+            return False
+        now = time.time()
+        if now < self._reopen_at:
+            return False
+        self._reopen_at = now + 5.0
+        port = self.port or autodetect_port()
+        if not port:
+            return False
+        try:
+            self.ser = serial.Serial(port, self.baud, timeout=0.05)
+            time.sleep(2.0)  # board may have rebooted on replug
+            self.drain()
+            self.port = port
+            log(f"[bridge] serial (re)connected on {port}")
+            return True
+        except Exception:
+            self.ser = None
+            # The remembered port may be stale (Windows re-enumerates on replug);
+            # fall back to auto-detect on the next attempt.
+            if self.port == port:
+                self.port = None
+            return False
 
     def drain(self):
         if self.ser and self.ser.in_waiting:
@@ -226,7 +276,15 @@ class Pico:
         try:
             self.ser.write((line + "\n").encode())
         except Exception as e:
-            print(f"[bridge] serial write failed ({e})")
+            # First failure logs once and downs the link; ensure_open() retries
+            # every 5s and the renderer forces a full repaint on recovery.
+            log(f"[bridge] serial write FAILED ({e}) — link down, retrying every 5s")
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
+            self._reopen_at = time.time() + 5.0
 
     def pace(self):
         """Flush + brief pause so the Pico can drain its receive buffer between
@@ -275,6 +333,8 @@ class Renderer:
         self.min_level = min_level
         self.base = base or {}   # (q, idx) -> (r, g, b) persistent underlay (hedges)
         self.last = {}           # (q, idx) -> (r, g, b) what's physically lit now
+        self._frames = 0         # frames since the last heartbeat log
+        self._hb_at = time.time() + 60.0
 
     def prime(self):
         """Light the static underlay (hedges) once, before any Foundry frame."""
@@ -304,10 +364,34 @@ class Renderer:
             self._render(data.get("leds", {}))
         elif t == "clear":
             self._apply_target(dict(self.base))  # revert to the hedge underlay, not black
+        elif t == "resync":
+            self.resync()
         elif t == "test":
             self._test(data.get("pattern", "panels"))
 
+    def resync(self):
+        """Foundry reconnected (or serial came back): wipe the diff cache and
+        repaint from scratch so the physical LEDs can't be stale."""
+        log("[bridge] resync — full repaint")
+        self.pico.clear()
+        self.last = {}
+        self._apply_target(dict(self.base))
+
     def _render(self, leds):
+        # If the serial link just came back (USB suspend, replug), force a clean
+        # slate — the physical strips may show anything from before the outage.
+        if self.pico.ensure_open():
+            self.pico.clear()
+            self.last = {}
+
+        self._frames += 1
+        now = time.time()
+        if now >= self._hb_at:  # file-only liveness trail for post-session diagnosis
+            log(f"[bridge] heartbeat: {self._frames} frames in the last minute, "
+                f"serial {'up' if self.pico.ser else 'DOWN'}", file_only=True)
+            self._frames = 0
+            self._hb_at = now + 60.0
+
         target = dict(self.base)  # start every frame from the green hedge underlay
         for key, rgb in leds.items():
             try:
@@ -338,20 +422,25 @@ async def run_server(renderer, host, port):
         return
 
     async def handler(websocket, *_):
-        print("[bridge] Foundry connected")
+        log("[bridge] Foundry connected")
         try:
             async for message in websocket:
                 try:
                     data = json.loads(message)
                 except json.JSONDecodeError:
                     continue
+                if data.get("type") == "ping":
+                    # Liveness probe from the module's watchdog — answer instantly
+                    # so a healthy link is never mistaken for a dead one.
+                    await websocket.send('{"type":"pong"}')
+                    continue
                 renderer.on_message(data)
         except Exception as e:
-            print(f"[bridge] connection error: {e}")
+            log(f"[bridge] connection error: {e}")
         finally:
-            print("[bridge] Foundry disconnected")
+            log("[bridge] Foundry disconnected")
 
-    print(f"[bridge] listening for Foundry on ws://{host}:{port}")
+    log(f"[bridge] listening for Foundry on ws://{host}:{port}")
     async with websockets.serve(handler, host, port):
         await asyncio.Future()  # run forever
 
@@ -525,7 +614,11 @@ def main():
         print(f"[bridge] interior hedges: {len(hedge_cells)} tiles -> {len(base)} "
               f"green LEDs (rgb {hedge_rgb}). Use --no-hedges to disable.")
 
-    pico = Pico(port, args.baud, args.brightness, args.verbose)
+    log(f"[bridge] starting (port={port or 'none'}, min={args.min}, "
+        f"brightness={args.brightness}, hedges={'off' if args.no_hedges else 'on'})",
+        file_only=True)
+    pico = Pico(port, args.baud, args.brightness, args.verbose,
+                allow_reopen=not args.dry)
 
     try:
         if args.calibrate:
@@ -535,7 +628,7 @@ def main():
             renderer.prime()  # light the hedges immediately, before Foundry connects
             asyncio.run(run_server(renderer, args.host, args.ws_port))
     except KeyboardInterrupt:
-        print("\n[bridge] shutting down")
+        log("[bridge] shutting down (Ctrl-C)")
     finally:
         pico.close()
 
